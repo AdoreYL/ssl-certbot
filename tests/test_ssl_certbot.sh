@@ -414,9 +414,20 @@ test_acme_bootstrap_only_receives_account_email() {
     local common
     common=$(<"$PROJECT_ROOT/src/common.sh")
 
-    assert_contains "$common" "sh -s -- email=ssl-certbot@localhost" "acme.sh 引导器只接收账户邮箱"
+    assert_contains "$common" 'sh -s -- "email=$email"' "acme.sh 引导器只接收账户邮箱"
     assert_not_contains "$common" "--home \"\$SSL_ACME_HOME\"" "acme.sh 引导器不接收内部安装参数"
     assert_contains "$common" '"$SSL_ACME_HOME/acme.sh" --uninstall-cronjob' "安装后移除 acme.sh 自己的 cron 任务"
+}
+
+test_acme_setup_requires_a_valid_email_and_registers_the_account() {
+    local common
+    common=$(<"$PROJECT_ROOT/src/common.sh")
+
+    assert_contains "$common" "请输入用于证书到期通知的邮箱" "首次申请会要求证书通知邮箱"
+    assert_contains "$common" "ssl_validate_acme_email" "证书通知邮箱会经过校验"
+    assert_contains "$common" '"$SSL_ACME_HOME/acme.sh" --register-account -m "$email" --server letsencrypt' "申请前会用通知邮箱注册 Let’s Encrypt 账户"
+    assert_contains "$common" '"$SSL_ACME_HOME/acme.sh" --update-account -m "$email" --server letsencrypt' "注册后会同步证书通知邮箱"
+    assert_not_contains "$common" "ssl-certbot@localhost" "不再使用无效的 localhost 注册邮箱"
 }
 
 test_ssl_menu_includes_update_and_uninstall_actions() {
@@ -446,6 +457,7 @@ test_entry_help_uses_installed_command_name
 test_entry_supports_uninstall_command
 test_acme_installer_does_not_use_removed_install_online_option
 test_acme_bootstrap_only_receives_account_email
+test_acme_setup_requires_a_valid_email_and_registers_the_account
 test_ssl_menu_includes_update_and_uninstall_actions
 
 if [[ "$fail_count" -ne 0 ]]; then

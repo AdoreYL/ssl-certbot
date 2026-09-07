@@ -103,6 +103,12 @@ sslcert ssl example.com
 
 删除证书可使用 `w ssl remove <domain>`，或在交互菜单中选择“删除证书”。该操作会删除 `/root/cert/<domain>/` 与对应的 acme.sh 本地记录，但不会向 Let's Encrypt 撤销已经签发的证书。
 
+首次申请证书时会要求输入真实的通知邮箱，用于注册和更新 Let's Encrypt 账户联系方式。非交互调用可预先设置 `SSL_CERTBOT_EMAIL`，例如：
+
+```bash
+SSL_CERTBOT_EMAIL=admin@example.com w ssl example.com
+```
+
 ## 自动续期机制
 
 安装后会自动注册 Cron 定时任务，每天凌晨 02:30 执行扫描。脚本使用 `openssl x509 -checkend` 判断证书是否进入约 30 天的续期窗口，避免依赖 Alpine BusyBox 与 GNU `date` 的参数差异。

@@ -179,20 +179,56 @@ ssl_ensure_deps() {
 }
 
 # ── acme.sh install ────────────────────────────────────────────────
+ssl_validate_acme_email() {
+    local email="$1"
+
+    [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]
+}
+
+ssl_get_acme_email() {
+    local email="${SSL_CERTBOT_EMAIL:-}"
+
+    while ! ssl_validate_acme_email "$email"; do
+        if [[ -n "$email" ]]; then
+            ssl_log ERROR "邮箱格式无效，请输入类似 name@example.com 的邮箱。"
+        fi
+        if [[ ! -t 0 ]]; then
+            ssl_log ERROR "未提供有效的证书通知邮箱。请设置 SSL_CERTBOT_EMAIL 后重试。"
+            return 1
+        fi
+        read -rp "  请输入用于证书到期通知的邮箱：" email
+    done
+
+    echo "$email"
+}
+
 ssl_ensure_acme() {
+    local email
+    email=$(ssl_get_acme_email) || return 1
+
     if [[ -f "$SSL_ACME_HOME/acme.sh" ]]; then
         ssl_log INFO "acme.sh 已安装：$SSL_ACME_HOME"
-        return 0
+    else
+        ssl_log INFO "正在安装 acme.sh..."
+        curl -fsSL https://get.acme.sh | sh -s -- "email=$email"
+        if [[ ! -f "$SSL_ACME_HOME/acme.sh" ]]; then
+            ssl_die "acme.sh 安装失败。"
+        fi
     fi
-    ssl_log INFO "正在安装 acme.sh..."
-    curl -fsSL https://get.acme.sh | sh -s -- email=ssl-certbot@localhost
-    if [[ ! -f "$SSL_ACME_HOME/acme.sh" ]]; then
-        ssl_die "acme.sh 安装失败。"
-    fi
+
     "$SSL_ACME_HOME/acme.sh" --uninstall-cronjob >/dev/null 2>&1 || \
         ssl_log WARN "未能移除 acme.sh 自带的 cron 任务，请手动检查 crontab。"
+
     # Default CA = Let's Encrypt
-    "$SSL_ACME_HOME/acme.sh" --set-default-ca --server letsencrypt 2>/dev/null || true
+    if ! "$SSL_ACME_HOME/acme.sh" --set-default-ca --server letsencrypt; then
+        ssl_die "无法将默认 CA 设置为 Let's Encrypt。"
+    fi
+    if ! "$SSL_ACME_HOME/acme.sh" --register-account -m "$email" --server letsencrypt; then
+        ssl_die "Let's Encrypt 账户注册失败，请检查邮箱和网络连接。"
+    fi
+    if ! "$SSL_ACME_HOME/acme.sh" --update-account -m "$email" --server letsencrypt; then
+        ssl_die "无法更新 Let's Encrypt 账户通知邮箱。"
+    fi
     ssl_log INFO "acme.sh 安装完成。"
 }
 
