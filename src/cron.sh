@@ -14,7 +14,8 @@ ssl_cron_daemon_available() {
     if [[ "$SSL_INIT" == "systemd" ]]; then
         systemctl list-unit-files cron.service crond.service 2>/dev/null | grep -qE '^(cron|crond)\.service'
     elif [[ "$SSL_INIT" == "openrc" ]]; then
-        command -v crond >/dev/null 2>&1 && rc-service --list 2>/dev/null | grep -qx "crond"
+        command -v crond >/dev/null 2>&1 && \
+            rc-service --list 2>/dev/null | grep -qxE "(crond|dcron)"
     else
         command -v cron >/dev/null 2>&1 || command -v crond >/dev/null 2>&1
     fi
@@ -27,7 +28,8 @@ ssl_cron_is_running() {
             return 0
         fi
     elif [[ "$SSL_INIT" == "openrc" ]]; then
-        if rc-service crond status >/dev/null 2>&1; then
+        if rc-service crond status >/dev/null 2>&1 || \
+           rc-service dcron status >/dev/null 2>&1; then
             return 0
         fi
     fi
@@ -45,21 +47,22 @@ ssl_cron_boot_enabled() {
         systemctl is-enabled cron.service >/dev/null 2>&1 || \
         systemctl is-enabled crond.service >/dev/null 2>&1
     elif [[ "$SSL_INIT" == "openrc" ]]; then
-        rc-update show default 2>/dev/null | awk '{print $1}' | grep -qx "crond"
+        rc-update show default 2>/dev/null | awk '{print $1}' | grep -qxE "(crond|dcron)"
     else
         return 1
     fi
 }
 
 ssl_cron_job_installed() {
-    ssl_cron_command_available && crontab -l 2>/dev/null | grep -qF "$SSL_CRON_MARKER"
+    ssl_cron_command_available && \
+        crontab -l 2>/dev/null | grep -F "$SSL_CRON_MARKER" | grep -q "renew-all\.sh"
 }
 
 ssl_start_cron() {
     if [[ "$SSL_INIT" == "systemd" ]]; then
         systemctl start cron.service 2>/dev/null || systemctl start crond.service 2>/dev/null
     elif [[ "$SSL_INIT" == "openrc" ]]; then
-        rc-service crond start 2>/dev/null
+        rc-service crond start 2>/dev/null || rc-service dcron start 2>/dev/null
     else
         return 1
     fi
@@ -100,7 +103,8 @@ ssl_enable_cron_boot() {
         systemctl enable cron.service 2>/dev/null || \
         systemctl enable crond.service 2>/dev/null || true
     elif [[ "$SSL_INIT" == "openrc" ]]; then
-        rc-update add crond default 2>/dev/null || true
+        rc-update add crond default 2>/dev/null || \
+        rc-update add dcron default 2>/dev/null || true
     fi
 }
 
