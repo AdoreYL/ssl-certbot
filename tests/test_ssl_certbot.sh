@@ -111,6 +111,34 @@ EOF
     assert_contains "$result" "container-a api 443" "识别绑定到具体 IPv4 地址:443 的 Docker 容器"
 }
 
+test_docker_container_name_requires_a_running_container() {
+    local case_dir="$TEST_TMP/docker-name"
+    mkdir -p "$case_dir/bin"
+    cat > "$case_dir/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+    inspect)
+        if [[ "${!#}" == "running-container" ]]; then
+            printf '%s\n' '/web-nginx'
+        fi
+        ;;
+esac
+EOF
+    chmod +x "$case_dir/bin/docker"
+
+    PATH="$case_dir/bin:$PATH"
+    source "$PROJECT_ROOT/src/port_service.sh"
+
+    local running_name missing_name
+    running_name=$(ssl_get_docker_container_name running-container || true)
+    missing_name=$(ssl_get_docker_container_name missing-container || true)
+    if [[ "$running_name" == "web-nginx" && -z "$missing_name" ]]; then
+        pass "仅将可确认正在运行的 Docker 容器纳入暂停计划"
+    else
+        fail "仅将可确认正在运行的 Docker 容器纳入暂停计划"
+    fi
+}
+
 test_process_name_without_verified_unit_is_unmanaged() {
     local result
     if ! result=$( (
@@ -239,6 +267,7 @@ test_entry_help_uses_installed_command_name() {
 
 test_renew_does_not_force_reissue
 test_docker_inspect_finds_non_wildcard_bindings
+test_docker_container_name_requires_a_running_container
 test_process_name_without_verified_unit_is_unmanaged
 test_preflight_does_not_stop_when_any_listener_is_unmanaged
 test_renew_skip_does_not_pause_services

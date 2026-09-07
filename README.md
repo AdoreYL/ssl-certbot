@@ -65,7 +65,7 @@ sslcert ssl example.com
 
 1. **域名与 DNS 预检**：校验域名格式合法性，检查公网 DNS 是否已正确解析到本机公网 IP。
 2. **端口占用检测**：检测当前占用 TCP 80 与 443 端口的具体服务进程。
-3. **安全暂停已确认服务**：仅当监听 PID 可由 `/proc/<PID>/cgroup` 确认归属 Nginx、Caddy、x-ui 或 3x-ui 的白名单 systemd 单元时，才会暂停该单元；检测到 `docker-proxy` 时仅处理可关联到同端口发布映射的 Docker 容器。无法确认来源的进程不会被强制停止。
+3. **安全暂停已确认服务**：仅当监听 PID 可由 `/proc/<PID>/cgroup` 确认归属 Nginx、Caddy、x-ui 或 3x-ui 的白名单 systemd 单元时，才会暂停该单元；若 cgroup 明确归属某个正在运行的 Docker 容器，则只暂停该容器；检测到 `docker-proxy` 时仅处理可关联到同端口发布映射的 Docker 容器。无法确认来源的进程不会被强制停止。
 4. **HTTP-01 验证**：启动 `acme.sh --standalone` 监听 80 端口，完成 Let's Encrypt 证书申请与签发。
 5. **规范归档证书**：将签发的证书与私钥统一安装归档到 `/root/cert/<domain>/` 目录。
 6. **现场完全复原**：无论签发成功、失败或人为中断（`Ctrl+C`），自动恢复先前暂停的所有服务，保障业务连续性。
@@ -113,7 +113,7 @@ sslcert ssl example.com
 | x-ui | `x-ui.service` |
 | 3x-ui | `3x-ui.service` |
 
-对于普通 bridge 网络的 Docker 端口发布，工具仅在实际观测到同端口的 `docker-proxy` 监听后才查找并暂停对应容器，绝不停止 Docker 守护进程（dockerd）。host 网络模式或无法可靠关联监听端口的 Docker 服务需要手动处理。
+对于 Docker 服务，工具只有在监听 PID 的 cgroup 明确归属某个正在运行的容器，或实际观测到同端口的 `docker-proxy` 且能匹配端口发布映射时，才会暂停对应容器，绝不停止 Docker 守护进程（dockerd）。无法可靠关联监听端口的 Docker 服务需要手动处理。
 
 ## 依赖要求
 

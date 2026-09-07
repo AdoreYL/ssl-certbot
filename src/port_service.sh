@@ -37,15 +37,35 @@ ssl_is_port_free() {
     [[ -z "$(ssl_detect_port_listeners "$1")" ]]
 }
 
-# Process names are not reliable service ownership. Return a unit only when
-# /proc/<PID>/cgroup proves that this listener belongs to a known systemd unit.
-# Output: systemd:unit.service, docker-proxy:PID, or an empty string.
+# Process names are not reliable service ownership. Return a manager only when
+# /proc/<PID>/cgroup proves the listener belongs to a known systemd unit or a
+# specific running Docker container.
+# Output: systemd:unit.service, docker:container-id:container-name,
+# docker-proxy:PID, or an empty string.
+ssl_get_docker_container_name() {
+    local cid="$1"
+    local name
+
+    command -v docker >/dev/null 2>&1 || return 1
+    name=$(docker inspect --format '{{if .State.Running}}{{.Name}}{{end}}' "$cid" 2>/dev/null || true)
+    name="${name#/}"
+    [[ -n "$name" ]] || return 1
+    printf '%s\n' "$name"
+}
+
 ssl_identify_service() {
     local pid="$1"
     local pname="$2"
-    local unit svc
+    local unit svc cid cname
 
     if [[ "$SSL_INIT" == "systemd" && -r "/proc/$pid/cgroup" ]]; then
+        cid=$(grep -oE 'docker-[[:xdigit:]]{64}\.scope' "/proc/$pid/cgroup" 2>/dev/null | \
+            sed -E 's/^docker-([[:xdigit:]]{64})\.scope$/\1/' | head -n 1 || true)
+        if [[ -n "$cid" ]] && cname=$(ssl_get_docker_container_name "$cid"); then
+            echo "docker:$cid:$cname"
+            return 0
+        fi
+
         while IFS= read -r unit; do
             unit="${unit##*/}"
             for svc in "${SSL_KNOWN_SERVICES[@]}"; do
@@ -158,8 +178,9 @@ ssl_report_unmanaged_listener() {
 }
 
 # Build a complete pause plan before stopping anything. Every listener must be
-# a verified systemd unit or an observed Docker bridge listener with a matching
-# running container. Otherwise no service is interrupted.
+# a verified systemd unit, a Docker cgroup with a matching running container,
+# or an observed Docker bridge listener with a matching running container.
+# Otherwise no service is interrupted.
 ssl_pause_port_services() {
     ssl_init_state
 
@@ -178,7 +199,10 @@ ssl_pause_port_services() {
             [[ -z "$pid" ]] && continue
             service_id=$(ssl_identify_service "$pid" "$pname")
 
-            if [[ "$service_id" == docker-proxy:* ]]; then
+            if [[ "$service_id" == docker:* ]]; then
+                IFS=: read -r _ identifier pname <<< "$service_id"
+                pause_plan+=("docker:$identifier:$pname:$port")
+            elif [[ "$service_id" == docker-proxy:* ]]; then
                 local docker_containers
                 docker_containers=$(ssl_detect_docker_containers_for_port "$port")
                 if [[ -z "$docker_containers" ]]; then
