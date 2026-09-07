@@ -12,15 +12,15 @@
 
 ```bash
 # Debian / Ubuntu 一键远程安装（推荐）
-bash <(curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh)
+curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh | bash
 ```
 
 Alpine Linux 最小系统默认不含 `bash` 和 `curl`，需先安装前置依赖：
 
 ```bash
-# Alpine Linux 首次安装
+# Alpine Linux 首次安装（兼容 /dev/fd 被限制执行的环境）
 apk add --no-cache bash curl tar
-bash <(curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh)
+curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh | bash
 ```
 
 ```bash
@@ -42,7 +42,7 @@ bash install/install.sh
 默认快捷命令为 `w`。若 `/usr/local/bin/w` 已被其他程序占用且不选择覆盖，安装器会尝试安装备用命令 `sslcert`；也可以在安装时主动指定命令名：
 
 ```bash
-SSL_CERTBOT_BIN=sslcert bash <(curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh)
+curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh | SSL_CERTBOT_BIN=sslcert bash
 sslcert ssl example.com
 ```
 

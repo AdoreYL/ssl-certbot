@@ -449,6 +449,24 @@ test_ssl_menu_includes_update_and_uninstall_actions() {
     assert_contains "$ssl_script" "update)" "命令行支持更新脚本子命令"
 }
 
+test_readme_uses_pipe_installation_for_alpine() {
+    local readme alpine_section
+    readme=$(<"$PROJECT_ROOT/README.md")
+    alpine_section=$(printf '%s\n' "$readme" | awk '
+        /# Alpine Linux 首次安装/ { in_section = 1 }
+        in_section { print }
+        in_section && /^```$/ {
+            fences++
+            if (fences == 2) {
+                exit
+            }
+        }
+    ')
+
+    assert_contains "$alpine_section" "curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh | bash" "Alpine 安装使用不依赖 /dev/fd 的管道方式"
+    assert_not_contains "$alpine_section" "bash <(" "Alpine 安装不使用可能受限的进程替换"
+}
+
 test_renew_does_not_force_reissue
 test_certificate_expiry_uses_china_standard_time_format
 test_remove_certificate_removes_local_files_and_acme_record
@@ -470,6 +488,7 @@ test_acme_bootstrap_does_not_receive_account_options
 test_acme_setup_does_not_require_an_email_address
 test_acme_email_cleanup_covers_account_and_ca_configs
 test_ssl_menu_includes_update_and_uninstall_actions
+test_readme_uses_pipe_installation_for_alpine
 
 if [[ "$fail_count" -ne 0 ]]; then
     printf '%s test(s) failed; %s passed.\n' "$fail_count" "$pass_count" >&2
