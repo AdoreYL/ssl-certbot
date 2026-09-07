@@ -45,9 +45,10 @@ ssl_interactive_menu() {
     echo "  3. 查看证书状态"
     echo "  4. 查看运行日志"
     echo "  5. 查看帮助"
+    echo "  6. 删除证书"
     echo "  0. 退出"
     echo ""
-    read -rp "  请选择 [0-5]: " choice
+    read -rp "  请选择 [0-6]: " choice
 
     case "$choice" in
         1)
@@ -71,9 +72,31 @@ ssl_interactive_menu() {
         3) ssl_cert_status ;;
         4) ssl_cmd_logs ;;
         5) ssl_cmd_help ;;
+        6) ssl_cmd_remove ;;
         0) exit 0 ;;
         *) ssl_log ERROR "无效的选项。" ;;
     esac
+}
+
+# ── Command: remove ────────────────────────────────────────────────
+ssl_cmd_remove() {
+    local domain="${1:-}"
+    local confirm
+
+    if [[ -z "$domain" ]]; then
+        read -rp "  请输入要删除证书的域名：" domain
+    fi
+    if ! ssl_validate_domain "$domain"; then
+        return 1
+    fi
+
+    echo ""
+    echo "${C_YELLOW}${C_BOLD}警告：${C_RESET} 将删除以下本地证书文件："
+    echo "  /root/cert/${domain}/"
+    echo "  同时清除 acme.sh 的本地证书记录。"
+    echo "  此操作不会向证书颁发机构撤销已签发的证书。"
+    read -rp "  输入 yes 确认删除：" confirm
+    ssl_remove_cert "$domain" "$confirm"
 }
 
 # ── Command: apply ──────────────────────────────────────────────────
@@ -262,6 +285,7 @@ ssl_cmd_help() {
     echo "    w ssl list               列出已管理的证书"
     echo "    w ssl status [域名]      查看证书状态"
     echo "    w ssl renew [域名]       手动续期证书"
+    echo "    w ssl remove <域名>      删除本地证书与 acme.sh 记录"
     echo "    w ssl logs               查看最近日志"
     echo "    w ssl help               查看帮助"
     echo ""
@@ -284,6 +308,7 @@ ssl_cmd_help() {
     echo "    - TCP 443 属于暂停/恢复范围，但验证本身不需要它"
     echo "    - 无法确认来源的进程不会被强制停止"
     echo "    - 证书变更后不会自动重载服务"
+    echo "    - 删除证书不会向证书颁发机构撤销已签发的证书"
     echo "    - 不需要 Docker、Certbot 或大型运行时"
     echo "    - 基于 acme.sh 与 Let's Encrypt"
     echo ""
@@ -367,6 +392,9 @@ main() {
             ;;
         renew)
             ssl_cmd_renew "${2:-}"
+            ;;
+        remove|delete|rm)
+            ssl_cmd_remove "${2:-}"
             ;;
         logs|log)
             ssl_cmd_logs

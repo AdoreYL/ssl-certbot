@@ -82,6 +82,86 @@ EOF
     assert_not_contains "$renew_args" "--force" "普通续期不强制重新签发"
 }
 
+test_certificate_expiry_uses_china_standard_time_format() {
+    local case_dir="$TEST_TMP/expiry"
+    mkdir -p "$case_dir/bin"
+    cat > "$case_dir/bin/date" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"Dec  6 09:30:50 2026 GMT"* ]]; then
+    printf '%s\n' '2026年12月06日 17:30:50（中国标准时间）'
+fi
+EOF
+    chmod +x "$case_dir/bin/date"
+
+    PATH="$case_dir/bin:$PATH"
+    source "$PROJECT_ROOT/src/cert.sh"
+
+    local result
+    result=$(ssl_format_cert_expiry 'Dec  6 09:30:50 2026 GMT')
+    if [[ "$result" == "2026年12月06日 17:30:50（中国标准时间）" ]]; then
+        pass "证书到期时间显示为中国标准时间"
+    else
+        fail "证书到期时间显示为中国标准时间"
+    fi
+}
+
+test_remove_certificate_removes_local_files_and_acme_record() {
+    local case_dir="$TEST_TMP/remove"
+    local cert_base="$case_dir/certs"
+    local acme_home="$case_dir/acme"
+    local acme_args="$case_dir/acme.args"
+    local domain="example.com"
+    mkdir -p "$cert_base/$domain" "$acme_home/$domain"
+    printf '%s\n' certificate > "$cert_base/$domain/fullchain.pem"
+    printf '%s\n' private-key > "$cert_base/$domain/privkey.pem"
+    cat > "$case_dir/acme.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$ACME_ARGS_FILE"
+EOF
+    chmod +x "$case_dir/acme.sh"
+
+    if (
+        SSL_CERT_BASE="$cert_base"
+        SSL_ACME_HOME="$acme_home"
+        SSL_ACME_BIN="$case_dir/acme.sh"
+        export ACME_ARGS_FILE="$acme_args"
+        ssl_log() { :; }
+        ssl_validate_domain() { return 0; }
+        source "$PROJECT_ROOT/src/cert.sh"
+        ssl_remove_cert "$domain" yes
+    ); then
+        if [[ ! -d "$cert_base/$domain" ]] && grep -q -- '--remove -d example.com' "$acme_args"; then
+            pass "删除证书会移除本地文件和 acme.sh 记录"
+        else
+            fail "删除证书会移除本地文件和 acme.sh 记录"
+        fi
+    else
+        fail "删除证书会移除本地文件和 acme.sh 记录"
+    fi
+}
+
+test_remove_certificate_requires_confirmation() {
+    local case_dir="$TEST_TMP/remove-confirm"
+    local cert_base="$case_dir/certs"
+    local domain="example.com"
+    mkdir -p "$cert_base/$domain"
+    printf '%s\n' certificate > "$cert_base/$domain/fullchain.pem"
+
+    if (
+        SSL_CERT_BASE="$cert_base"
+        ssl_log() { :; }
+        ssl_validate_domain() { return 0; }
+        source "$PROJECT_ROOT/src/cert.sh"
+        ssl_remove_cert "$domain" no
+    ); then
+        fail "删除证书需要明确确认"
+    elif [[ -d "$cert_base/$domain" ]]; then
+        pass "删除证书需要明确确认"
+    else
+        fail "删除证书需要明确确认"
+    fi
+}
+
 test_docker_inspect_finds_non_wildcard_bindings() {
     local case_dir="$TEST_TMP/docker"
     mkdir -p "$case_dir/bin"
@@ -308,6 +388,9 @@ test_entry_help_uses_installed_command_name() {
 }
 
 test_renew_does_not_force_reissue
+test_certificate_expiry_uses_china_standard_time_format
+test_remove_certificate_removes_local_files_and_acme_record
+test_remove_certificate_requires_confirmation
 test_docker_inspect_finds_non_wildcard_bindings
 test_docker_container_name_requires_a_running_container
 test_supported_listener_uses_its_actual_systemd_unit

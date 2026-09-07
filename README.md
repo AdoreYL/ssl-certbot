@@ -56,6 +56,7 @@ sslcert ssl example.com
 | `w ssl status` | 查看指定域名的详细证书状态与端口环境 |
 | `w ssl renew` | 批量手动续期所有证书 |
 | `w ssl renew <domain>` | 手动续期指定域名的证书 |
+| `w ssl remove <domain>` | 删除本地证书文件及 acme.sh 记录（需输入 `yes` 确认） |
 | `w ssl logs` | 查看工具操作与续期日志 |
 | `w ssl help` | 查看命令行帮助信息 |
 
@@ -95,6 +96,10 @@ sslcert ssl example.com
 ```
 
 各域名独立目录隔离存储，绝不发生覆盖冲突。
+
+列表和详情中的到期时间会统一换算为中国标准时间，例如 `2026年12月06日 17:30:50（中国标准时间）`。
+
+删除证书可使用 `w ssl remove <domain>`，或在交互菜单中选择“删除证书”。该操作会删除 `/root/cert/<domain>/` 与对应的 acme.sh 本地记录，但不会向 Let's Encrypt 撤销已经签发的证书。
 
 ## 自动续期机制
 

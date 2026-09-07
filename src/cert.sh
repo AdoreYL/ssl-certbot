@@ -2,6 +2,32 @@
 # ssl-certbot certificate operations
 # Handles: issue, deploy, status, list, renew
 
+# ── Certificate display helpers ────────────────────────────────────
+ssl_format_cert_expiry() {
+    local expiry="$1"
+    local formatted
+
+    [[ -n "$expiry" ]] || {
+        echo "未知"
+        return 0
+    }
+
+    formatted=$(TZ=Asia/Shanghai date -d "$expiry" '+%Y年%m月%d日 %H:%M:%S（中国标准时间）' 2>/dev/null || true)
+    if [[ -n "$formatted" ]]; then
+        echo "$formatted"
+    else
+        echo "$expiry"
+    fi
+}
+
+ssl_cert_expiry_from_file() {
+    local fullchain="$1"
+    local raw_expiry
+
+    raw_expiry=$(openssl x509 -in "$fullchain" -noout -enddate 2>/dev/null | cut -d= -f2)
+    ssl_format_cert_expiry "$raw_expiry"
+}
+
 # ── Issue certificate ───────────────────────────────────────────────
 ssl_issue_cert() {
     local domain="$1"
@@ -65,7 +91,7 @@ ssl_issue_cert() {
 
     # Log certificate details
     local expiry
-    expiry=$(openssl x509 -in "$fullchain" -noout -enddate 2>/dev/null | cut -d= -f2)
+    expiry=$(ssl_cert_expiry_from_file "$fullchain")
     ssl_log INFO "到期时间：${expiry:-未知}"
 
     return 0
@@ -237,7 +263,7 @@ ssl_list_certs() {
 
         found=1
         local expiry days_left issuer
-        expiry=$(openssl x509 -in "$fullchain" -noout -enddate 2>/dev/null | cut -d= -f2)
+        expiry=$(ssl_cert_expiry_from_file "$fullchain")
         issuer=$(openssl x509 -in "$fullchain" -noout -issuer 2>/dev/null | sed 's/issuer=//')
 
         # openssl -checkend is portable across GNU and BusyBox systems.
@@ -302,8 +328,15 @@ ssl_cert_status() {
     echo ""
     echo "${C_BOLD}证书状态：$domain${C_RESET}"
     echo "────────────────────────────────────────"
-    openssl x509 -in "$fullchain" -noout -subject -issuer -dates -serial 2>/dev/null | \
-        sed 's/^/  /'
+    local subject issuer serial expiry
+    subject=$(openssl x509 -in "$fullchain" -noout -subject 2>/dev/null | sed 's/^subject=//')
+    issuer=$(openssl x509 -in "$fullchain" -noout -issuer 2>/dev/null | sed 's/^issuer=//')
+    serial=$(openssl x509 -in "$fullchain" -noout -serial 2>/dev/null | sed 's/^serial=//')
+    expiry=$(ssl_cert_expiry_from_file "$fullchain")
+    echo "  主题：${subject:-未知}"
+    echo "  签发者：${issuer:-未知}"
+    echo "  到期时间：${expiry:-未知}"
+    echo "  序列号：${serial:-未知}"
     echo ""
 
     # Check permissions
@@ -318,4 +351,36 @@ ssl_cert_status() {
         fi
     fi
     echo ""
+}
+
+# ── Remove certificate ─────────────────────────────────────────────
+ssl_remove_cert() {
+    local domain="$1"
+    local confirmed="${2:-}"
+    local cert_dir="${SSL_CERT_BASE}/${domain}"
+    local acme_bin="${SSL_ACME_BIN:-${SSL_ACME_HOME}/acme.sh}"
+
+    if ! ssl_validate_domain "$domain"; then
+        return 1
+    fi
+
+    if [[ ! -d "$cert_dir" ]]; then
+        ssl_log ERROR "未找到域名证书：$domain"
+        return 1
+    fi
+
+    if [[ "$confirmed" != "yes" ]]; then
+        ssl_log INFO "已取消删除证书：$domain"
+        return 1
+    fi
+
+    if [[ -x "$acme_bin" ]]; then
+        if ! "$acme_bin" --remove -d "$domain"; then
+            ssl_log WARN "未能清除 acme.sh 中的证书记录，将继续删除本地证书文件。"
+        fi
+    fi
+
+    rm -rf "$cert_dir"
+    ssl_log INFO "已删除 $domain 的本地证书文件。"
+    ssl_log INFO "此操作不会向证书颁发机构撤销已签发的证书。"
 }
