@@ -109,6 +109,9 @@ for f in common.sh port_service.sh cert.sh cron.sh ssl-certbot.sh renew-all.sh; 
     chmod 755 "${INSTALL_LIB_DIR}/${f}"
 done
 
+cp -f "${SCRIPT_DIR}/uninstall.sh" "${INSTALL_LIB_DIR}/uninstall.sh"
+chmod 755 "${INSTALL_LIB_DIR}/uninstall.sh"
+
 # ── Install w command ──────────────────────────────────────────────
 install_w_command() {
     if [[ -f "$INSTALL_COMMAND_BIN" ]]; then
@@ -206,6 +209,8 @@ echo "    ${INSTALL_COMMAND_NAME} ssl example.com     为域名申请证书"
 echo "    ${INSTALL_COMMAND_NAME} ssl list            查看已管理的证书"
 echo "    ${INSTALL_COMMAND_NAME} ssl status          查看证书状态"
 echo "    ${INSTALL_COMMAND_NAME} ssl renew           续期证书"
+echo "    ${INSTALL_COMMAND_NAME} ssl remove <域名>   删除本地证书"
+echo "    ${INSTALL_COMMAND_NAME} ssl uninstall       卸载 ssl-certbot"
 echo "    ${INSTALL_COMMAND_NAME} ssl help            查看帮助"
 echo ""
 echo "  程序目录：${INSTALL_LIB_DIR}"

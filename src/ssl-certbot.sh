@@ -99,6 +99,18 @@ ssl_cmd_remove() {
     ssl_remove_cert "$domain" "$confirm"
 }
 
+# ── Command: uninstall ─────────────────────────────────────────────
+ssl_cmd_uninstall() {
+    local uninstall_script="${LIB_DIR}/uninstall.sh"
+
+    if [[ ! -x "$uninstall_script" ]]; then
+        ssl_log ERROR "未找到已安装的卸载脚本：$uninstall_script"
+        return 1
+    fi
+
+    exec "$uninstall_script"
+}
+
 # ── Command: apply ──────────────────────────────────────────────────
 ssl_cmd_apply() {
     local domain="$1"
@@ -286,6 +298,7 @@ ssl_cmd_help() {
     echo "    w ssl status [域名]      查看证书状态"
     echo "    w ssl renew [域名]       手动续期证书"
     echo "    w ssl remove <域名>      删除本地证书与 acme.sh 记录"
+    echo "    w ssl uninstall          卸载 ssl-certbot（保留证书与 acme.sh）"
     echo "    w ssl logs               查看最近日志"
     echo "    w ssl help               查看帮助"
     echo ""
@@ -395,6 +408,9 @@ main() {
             ;;
         remove|delete|rm)
             ssl_cmd_remove "${2:-}"
+            ;;
+        uninstall)
+            ssl_cmd_uninstall
             ;;
         logs|log)
             ssl_cmd_logs

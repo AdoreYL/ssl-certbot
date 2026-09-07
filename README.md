@@ -57,6 +57,7 @@ sslcert ssl example.com
 | `w ssl renew` | 批量手动续期所有证书 |
 | `w ssl renew <domain>` | 手动续期指定域名的证书 |
 | `w ssl remove <domain>` | 删除本地证书文件及 acme.sh 记录（需输入 `yes` 确认） |
+| `w ssl uninstall` | 卸载 ssl-certbot（保留证书、acme.sh 和日志） |
 | `w ssl logs` | 查看工具操作与续期日志 |
 | `w ssl help` | 查看命令行帮助信息 |
 
@@ -160,10 +161,12 @@ sslcert ssl example.com
 ## 卸载
 
 ```bash
-bash install/uninstall.sh
+w ssl uninstall
 ```
 
 卸载仅移除本工具的软链接与脚本本体，已签发的证书与 `acme.sh` 均会安全保留。
+
+若是在克隆仓库的目录中运行，也可以执行 `bash install/uninstall.sh`。远程安装完成后，卸载脚本会随程序一起安装，无需保留仓库目录。
 
 ## 项目文件结构
 

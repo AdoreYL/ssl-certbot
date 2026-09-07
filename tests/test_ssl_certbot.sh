@@ -375,6 +375,13 @@ test_remote_installer_is_independent_bootstrap() {
     assert_not_contains "$installer" 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"' "远程安装器不依赖进程替换脚本所在目录"
 }
 
+test_installer_deploys_uninstaller() {
+    local installer
+    installer=$(<"$PROJECT_ROOT/install/install.sh")
+
+    assert_contains "$installer" "uninstall.sh" "安装器会部署卸载脚本"
+}
+
 test_entry_help_uses_installed_command_name() {
     local case_dir="$TEST_TMP/entry"
     mkdir -p "$case_dir"
@@ -385,6 +392,15 @@ test_entry_help_uses_installed_command_name() {
     help_output=$("$case_dir/sslcert" help)
     assert_contains "$help_output" "sslcert ssl" "备用命令帮助显示实际安装命令名"
     assert_not_contains "$help_output" "    w ssl" "备用命令帮助不硬编码默认命令名"
+}
+
+test_entry_supports_uninstall_command() {
+    local entry ssl_script
+    entry=$(<"$PROJECT_ROOT/src/w-entry.sh")
+    ssl_script=$(<"$PROJECT_ROOT/src/ssl-certbot.sh")
+
+    assert_contains "$entry" "uninstall" "快捷命令支持卸载子命令"
+    assert_contains "$ssl_script" '"${LIB_DIR}/uninstall.sh"' "卸载命令调用已安装的卸载脚本"
 }
 
 test_renew_does_not_force_reissue
@@ -400,7 +416,9 @@ test_preflight_does_not_stop_when_any_listener_is_unmanaged
 test_renew_skip_does_not_pause_services
 test_renew_failure_returns_nonzero
 test_remote_installer_is_independent_bootstrap
+test_installer_deploys_uninstaller
 test_entry_help_uses_installed_command_name
+test_entry_supports_uninstall_command
 
 if [[ "$fail_count" -ne 0 ]]; then
     printf '%s test(s) failed; %s passed.\n' "$fail_count" "$pass_count" >&2
