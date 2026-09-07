@@ -179,38 +179,22 @@ ssl_ensure_deps() {
 }
 
 # ── acme.sh install ────────────────────────────────────────────────
-ssl_validate_acme_email() {
-    local email="$1"
+ssl_clear_acme_account_email() {
+    local account_conf="${SSL_ACME_HOME}/account.conf"
+    local ca_conf="${SSL_ACME_HOME}/ca/acme-v02.api.letsencrypt.org/directory/account.conf"
 
-    [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]
-}
-
-ssl_get_acme_email() {
-    local email="${SSL_CERTBOT_EMAIL:-}"
-
-    while ! ssl_validate_acme_email "$email"; do
-        if [[ -n "$email" ]]; then
-            ssl_log ERROR "邮箱格式无效，请输入类似 name@example.com 的邮箱。"
-        fi
-        if [[ ! -t 0 ]]; then
-            ssl_log ERROR "未提供有效的证书通知邮箱。请设置 SSL_CERTBOT_EMAIL 后重试。"
-            return 1
-        fi
-        read -rp "  请输入用于证书到期通知的邮箱：" email
+    for account_conf in "$account_conf" "$ca_conf"; do
+        [[ -f "$account_conf" ]] || continue
+        sed -i '/^ACCOUNT_EMAIL=.*ssl-certbot@localhost/d;/^CA_EMAIL=.*ssl-certbot@localhost/d' "$account_conf"
     done
-
-    echo "$email"
 }
 
 ssl_ensure_acme() {
-    local email
-    email=$(ssl_get_acme_email) || return 1
-
     if [[ -f "$SSL_ACME_HOME/acme.sh" ]]; then
         ssl_log INFO "acme.sh 已安装：$SSL_ACME_HOME"
     else
         ssl_log INFO "正在安装 acme.sh..."
-        curl -fsSL https://get.acme.sh | sh -s -- "email=$email"
+        curl -fsSL https://get.acme.sh | sh -s --
         if [[ ! -f "$SSL_ACME_HOME/acme.sh" ]]; then
             ssl_die "acme.sh 安装失败。"
         fi
@@ -218,16 +202,14 @@ ssl_ensure_acme() {
 
     "$SSL_ACME_HOME/acme.sh" --uninstall-cronjob >/dev/null 2>&1 || \
         ssl_log WARN "未能移除 acme.sh 自带的 cron 任务，请手动检查 crontab。"
+    ssl_clear_acme_account_email
 
     # Default CA = Let's Encrypt
     if ! "$SSL_ACME_HOME/acme.sh" --set-default-ca --server letsencrypt; then
         ssl_die "无法将默认 CA 设置为 Let's Encrypt。"
     fi
-    if ! "$SSL_ACME_HOME/acme.sh" --register-account -m "$email" --server letsencrypt; then
-        ssl_die "Let's Encrypt 账户注册失败，请检查邮箱和网络连接。"
-    fi
-    if ! "$SSL_ACME_HOME/acme.sh" --update-account -m "$email" --server letsencrypt; then
-        ssl_die "无法更新 Let's Encrypt 账户通知邮箱。"
+    if ! "$SSL_ACME_HOME/acme.sh" --register-account --server letsencrypt; then
+        ssl_die "Let's Encrypt 账户注册失败，请检查网络连接。"
     fi
     ssl_log INFO "acme.sh 安装完成。"
 }

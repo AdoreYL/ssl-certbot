@@ -103,11 +103,7 @@ sslcert ssl example.com
 
 删除证书可使用 `w ssl remove <domain>`，或在交互菜单中选择“删除证书”。该操作会删除 `/root/cert/<domain>/` 与对应的 acme.sh 本地记录，但不会向 Let's Encrypt 撤销已经签发的证书。
 
-首次申请证书时会要求输入真实的通知邮箱，用于注册和更新 Let's Encrypt 账户联系方式。非交互调用可预先设置 `SSL_CERTBOT_EMAIL`，例如：
-
-```bash
-SSL_CERTBOT_EMAIL=admin@example.com w ssl example.com
-```
+工具不要求配置证书通知邮箱，会以无联系邮箱的 Let’s Encrypt 账户完成注册并依靠自动续期维护证书。若旧版脚本曾写入 `ssl-certbot@localhost`，新版会在运行时自动清除这条无效配置。
 
 ## 自动续期机制
 
