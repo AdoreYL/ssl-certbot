@@ -1,171 +1,155 @@
-# ssl-certbot
+﻿# ssl-certbot
 
-Lightweight SSL certificate manager for small VPS. Uses **acme.sh** and
-**Let's Encrypt HTTP-01** to issue trusted certificates without Docker,
-Certbot, Python, or Node.js.
+专为轻量 VPS / 云服务器打造的轻量级自动化 SSL 证书管理工具。基于 **acme.sh** 与 **Let's Encrypt HTTP-01** 独立模式（Standalone）签发权威可信证书，无需 Docker、Certbot、Python 或 Node.js 运行时。
 
-## Supported Systems
+## 支持系统
 
 - Debian 11 / 12 / 13
 - Ubuntu 20.04 / 22.04 / 24.04
 - Alpine Linux 3.x
 
-## Quick Start
+## 快速上手
 
 ```bash
-# Clone and install
-git clone https://github.com/yourname/ssl-certbot.git
+# 克隆仓库并安装
+git clone https://github.com/AdoreYL/ssl-certbot.git
 cd ssl-certbot
 bash install/install.sh
 
-# Apply a certificate
+# 直接为域名申请证书
 w ssl example.com
 
-# Or use the interactive menu
+# 或调出交互式操作菜单
 w ssl
 ```
 
-## Commands
+## 常用命令
 
-| Command              | Description                       |
-|----------------------|-----------------------------------|
-| `w ssl`              | Interactive menu                  |
-| `w ssl <domain>`     | Apply or renew certificate        |
-| `w ssl list`         | List managed certificates         |
-| `w ssl status`       | Show certificate status           |
-| `w ssl renew`        | Manually renew all certificates   |
-| `w ssl renew <domain>` | Renew a specific certificate   |
-| `w ssl logs`         | View recent logs                  |
-| `w ssl help`         | Show help                         |
+| 命令 | 说明 |
+|------|------|
+| `w ssl` | 打开交互式管理菜单 |
+| `w ssl <domain>` | 申请或续期指定域名证书 |
+| `w ssl list` | 列出所有已管理的证书及剩余天数 |
+| `w ssl status` | 查看指定域名的详细证书状态与端口环境 |
+| `w ssl renew` | 批量手动续期所有证书 |
+| `w ssl renew <domain>` | 手动续期指定域名的证书 |
+| `w ssl logs` | 查看工具操作与续期日志 |
+| `w ssl help` | 查看命令行帮助信息 |
 
-Commands are case-insensitive: `w ssl`, `W ssl`, `w SSL`, `W SSL` all work.
+> 指令大小写不敏感：`w ssl`、`W ssl`、`w SSL`、`W SSL` 均可正常执行。
 
-## How It Works
+## 工作机制
 
-1. Validates the domain name and checks DNS resolution
-2. Detects services listening on TCP 80 and 443
-3. Pauses known services (Nginx, Caddy, x-ui, 3x-ui) and Docker containers
-   that are actually occupying those ports
-4. Runs `acme.sh --standalone` to complete HTTP-01 validation on port 80
-5. Installs the certificate to `/root/cert/<domain>/`
-6. Restores all paused services to their original state
-7. Configures automatic renewal via cron
+1. **域名与 DNS 预检**：校验域名格式合法性，检查公网 DNS 是否已正确解析到本机公网 IP。
+2. **端口占用检测**：检测当前占用 TCP 80 与 443 端口的具体服务进程。
+3. **安全暂停已知服务**：识别已知 Web/代理服务（Nginx、Caddy、x-ui、3x-ui）或映射了上述端口的 Docker 容器，并安全暂停它们以释放验证端口。
+4. **HTTP-01 验证**：启动 `acme.sh --standalone` 监听 80 端口，完成 Let's Encrypt 证书申请与签发。
+5. **规范归档证书**：将签发的证书与私钥统一安装归档到 `/root/cert/<domain>/` 目录。
+6. **现场完全复原**：无论签发成功、失败或人为中断（`Ctrl+C`），自动恢复先前暂停的所有服务，保障业务连续性。
+7. **自动续期配置**：注册系统 Cron 任务，实现到期前无人值守自动续签。
 
-### Important Notes
+### 核心注意事项
 
-- **TCP 80 is required** for HTTP-01 validation. Let's Encrypt must be
-  able to reach port 80 on this server from the public internet.
-- **TCP 443** is included in the service pause/restore scope, but it is
-  **not** required for HTTP-01 validation itself.
-- Services on 80/443 will be **briefly stopped** during certificate
-  issuance and renewal, then **automatically restored**.
-- **Unknown processes** occupying port 80 or 443 will **not** be killed.
-  The tool will report the PID and process name and ask you to handle it
-  manually.
+- **必须开放公网 TCP 80 端口**：HTTP-01 验证依赖 Let's Encrypt CA 服务器直接访问本机的 80 端口。若存在云厂商安全组/防火墙拦截，需提前放行。
+- **TCP 443 端口处理**：443 端口属于安全暂停/恢复范围，但 HTTP-01 验证本身仅占用 80 端口。
+- **零破坏与防误杀安全策略**：若检测到非受管的未知进程占用端口，脚本**绝不会**强行使用 `kill -9` 杀除，而是输出其 PID 和进程名，提示管理员手动处理。
 
-## Certificate Paths
+## 证书保存路径
 
-Certificates are stored per domain:
+所有证书均按域名分目录规范化存放：
 
 ```
-/root/cert/<domain>/fullchain.pem   (644)
-/root/cert/<domain>/privkey.pem     (600)
+/root/cert/<domain>/fullchain.pem   # 证书公钥链（权限 644）
+/root/cert/<domain>/privkey.pem     # 证书私钥（权限 600）
 ```
 
-Example:
+示例：
 
 ```
 /root/cert/hk.example.com/fullchain.pem
 /root/cert/hk.example.com/privkey.pem
 ```
 
-Each domain has its own directory. Certificates never overwrite each other.
+各域名独立目录隔离存储，绝不发生覆盖冲突。
 
-## Auto-Renewal
+## 自动续期机制
 
-A cron job runs daily at 2:30 AM (with random delay up to 1 hour) to
-check and renew certificates expiring within 30 days. The renewal process
-uses the same port-pause-restore logic as the initial issuance.
+安装后会自动注册 Cron 定时任务，在每天凌晨 02:30（并附带 0~60 分钟随机抖动防突发流量）执行扫描。当证书剩余有效期不足 30 天时，自动触发续期，复用完全相同的安全端口释放与现场恢复逻辑。
 
-## Service Detection
+## 适配服务检测清单
 
-The tool identifies and safely pauses these services when they actually
-occupy TCP 80 or 443:
+当以下服务实际占用了 TCP 80 或 443 端口时，工具会自动进行识别与受控启停：
 
-| Service        | Systemd Unit     | OpenRC Service |
-|----------------|------------------|----------------|
-| Nginx          | nginx.service    | nginx          |
-| Caddy          | caddy.service    | caddy          |
-| x-ui           | x-ui.service     | x-ui           |
-| 3x-ui          | 3x-ui.service    | 3x-ui          |
+| 服务名称 | Systemd 服务名 | OpenRC 服务名 |
+|----------|----------------|---------------|
+| Nginx | `nginx.service` | `nginx` |
+| Caddy | `caddy.service` | `caddy` |
+| x-ui | `x-ui.service` | `x-ui` |
+| 3x-ui | `3x-ui.service` | `3x-ui` |
 
-Docker containers with host port mappings to 80 or 443 are also detected
-and paused. The Docker daemon itself is never stopped.
+同时支持检测占用 80/443 的 Docker 容器并仅暂停容器自身，绝不停止 Docker 守护进程（dockerd）。
 
-## Dependencies
+## 依赖要求
 
-Minimal runtime dependencies (auto-installed if missing):
+仅依赖极简的系统基础工具（缺少时自动尝试安装）：
 
-- Bash
-- curl
-- openssl
-- socat
-- acme.sh (installed automatically)
-- cron/crond
-- ss, netstat, or lsof (at least one)
-- flock (for concurrency control)
+- `bash`
+- `curl`
+- `openssl`
+- `socat`
+- `acme.sh`（自动下载引导）
+- `cron` / `crond`
+- `ss` / `netstat` / `lsof`（至少具备其一）
+- `flock`（并发进程排他锁）
 
-**Not required:** Docker, Certbot, Python, Node.js, Cloudflare API.
+**无需安装：** Docker、Certbot、Python、Node.js，也无需配置 Cloudflare API Token。
 
-## Limitations (v1)
+## 设计边界与说明 (v1)
 
-- HTTP-01 only (no DNS-01)
-- Single domains only (no wildcards, no SAN)
-- No automatic service config modification (Nginx/Caddy/x-ui/3x-ui
-  configs are not touched)
-- No IP address certificates
-- No self-signed certificates
-- Debian/Ubuntu/Alpine only
+- 仅支持 HTTP-01 验证（暂不提供 DNS-01 API 接入）
+- 仅支持单域名证书（不支持通配符通配证书与多 SAN 域名合并）
+- 不主动侵入修改 Nginx/Caddy/x-ui 等服务的原有配置文件
+- 不支持申请纯 IP 证书与自签名证书
+- 专为 Debian/Ubuntu/Alpine 优化
 
-## Security
+## 安全特性
 
-- Runs as root (required for port 80 binding and service management)
-- Uses `umask 077` for all file creation
-- Private keys are always `chmod 600`
-- No `fuser -k`, `killall`, or `kill -9` against unknown processes
-- User input is validated and never interpolated into shell commands
-- Sensitive data (keys, passwords) never written to logs
-- All paused services are restored on success, failure, or interruption
-  (Ctrl+C, TERM, HUP)
+- 需 `root` 权限执行（绑定系统保留端口 80 及启停服务所需）
+- 全局限制安全掩码 `umask 077`
+- 私钥文件默认严格设定为 `600` 权限
+- 不使用任何粗暴的杀进程指令（无 `killall`、`fuser -k`）
+- 参数严格格式校验，杜绝 Shell 注入漏洞
+- 日志不记录任何私钥及敏感凭证
+- 具备退出捕获机制（Trap），遇到异常或信号中断时无条件恢复暂停的服务
 
-## Uninstall
+## 卸载
 
 ```bash
 bash install/uninstall.sh
 ```
 
-This removes the tool but preserves your certificates and acme.sh.
+卸载仅移除本工具的软链接与脚本本体，已签发的证书与 `acme.sh` 均会安全保留。
 
-## Project Structure
+## 项目文件结构
 
 ```
 ssl-certbot/
   src/
-    common.sh          Shared constants, logging, OS detection, deps
-    port_service.sh    Port detection, service identification, pause/resume
-    cert.sh            Certificate issue, renew, list, status
-    cron.sh            Cron management for auto-renewal
-    ssl-certbot.sh     Main entry point (w ssl dispatcher)
-    w-entry.sh         /usr/local/bin/w wrapper
-    renew-all.sh       Cron-invoked renewal script
+    common.sh          # 基础公共函数库、系统识别、依赖校验、锁与日志
+    port_service.sh    # 80/443 端口检测与服务识别、安全暂停与现场恢复
+    cert.sh            # 证书申请、续期、状态查看、列表列出
+    cron.sh            # 自动续期定时任务管理
+    ssl-certbot.sh     # 业务主入口分发器 (w ssl 命令核心)
+    w-entry.sh         # /usr/local/bin/w 快捷包装脚本
+    renew-all.sh       # Cron 定时调用的全量续期脚本
   install/
-    install.sh         Installer
-    uninstall.sh       Uninstaller
+    install.sh         # 一键安装脚本
+    uninstall.sh       # 卸载脚本
   docs/
-    requirements.md    Requirements specification
-  README.md            This file
+    requirements.md    # 架构与需求设计规范文档
+  README.md            # 项目说明文档
 ```
 
-## License
+## 开源协议
 
 MIT
