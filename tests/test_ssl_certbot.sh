@@ -139,6 +139,48 @@ EOF
     fi
 }
 
+test_supported_listener_uses_its_actual_systemd_unit() {
+    local case_dir="$TEST_TMP/systemd-unit"
+    local pid="4321"
+    mkdir -p "$case_dir/proc/$pid"
+    printf '%s\n' '0::/system.slice/custom-web.service' > "$case_dir/proc/$pid/cgroup"
+
+    local result
+    result=$( (
+        SSL_INIT="systemd"
+        SSL_PROC_ROOT="$case_dir/proc"
+        SSL_SUPPORTED_LISTENER_PROCESSES=("nginx")
+        source "$PROJECT_ROOT/src/port_service.sh"
+        ssl_identify_service "$pid" "nginx"
+    ) )
+    if [[ "$result" == "systemd:custom-web.service" ]]; then
+        pass "受支持 Web 进程使用 cgroup 中的实际 systemd 单元"
+    else
+        fail "受支持 Web 进程使用 cgroup 中的实际 systemd 单元"
+    fi
+}
+
+test_unsupported_listener_is_not_matched_to_a_systemd_unit() {
+    local case_dir="$TEST_TMP/unsupported-unit"
+    local pid="8765"
+    mkdir -p "$case_dir/proc/$pid"
+    printf '%s\n' '0::/system.slice/custom-web.service' > "$case_dir/proc/$pid/cgroup"
+
+    local result
+    result=$( (
+        SSL_INIT="systemd"
+        SSL_PROC_ROOT="$case_dir/proc"
+        SSL_SUPPORTED_LISTENER_PROCESSES=("nginx")
+        source "$PROJECT_ROOT/src/port_service.sh"
+        ssl_identify_service "$pid" "unknown-server"
+    ) )
+    if [[ -z "$result" ]]; then
+        pass "不支持的监听进程不会仅凭 systemd 单元自动管理"
+    else
+        fail "不支持的监听进程不会仅凭 systemd 单元自动管理"
+    fi
+}
+
 test_process_name_without_verified_unit_is_unmanaged() {
     local result
     if ! result=$( (
@@ -268,6 +310,8 @@ test_entry_help_uses_installed_command_name() {
 test_renew_does_not_force_reissue
 test_docker_inspect_finds_non_wildcard_bindings
 test_docker_container_name_requires_a_running_container
+test_supported_listener_uses_its_actual_systemd_unit
+test_unsupported_listener_is_not_matched_to_a_systemd_unit
 test_process_name_without_verified_unit_is_unmanaged
 test_preflight_does_not_stop_when_any_listener_is_unmanaged
 test_renew_skip_does_not_pause_services

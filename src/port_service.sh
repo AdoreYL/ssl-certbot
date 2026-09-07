@@ -37,11 +37,21 @@ ssl_is_port_free() {
     [[ -z "$(ssl_detect_port_listeners "$1")" ]]
 }
 
-# Process names are not reliable service ownership. Return a manager only when
-# /proc/<PID>/cgroup proves the listener belongs to a known systemd unit or a
-# specific running Docker container.
+# Process names alone are not reliable service ownership. A supported Web
+# listener must also have a cgroup-proven systemd unit before it is managed.
+# Docker listeners must map to a specific running Docker container.
 # Output: systemd:unit.service, docker:container-id:container-name,
 # docker-proxy:PID, or an empty string.
+ssl_is_supported_listener_process() {
+    local pname="${1,,}"
+    local supported
+
+    for supported in "${SSL_SUPPORTED_LISTENER_PROCESSES[@]}"; do
+        [[ "$pname" == "$supported" ]] && return 0
+    done
+    return 1
+}
+
 ssl_get_docker_container_name() {
     local cid="$1"
     local name
@@ -56,25 +66,24 @@ ssl_get_docker_container_name() {
 ssl_identify_service() {
     local pid="$1"
     local pname="$2"
-    local unit svc cid cname
+    local unit cid cname
+    local cgroup_file="${SSL_PROC_ROOT:-/proc}/$pid/cgroup"
 
-    if [[ "$SSL_INIT" == "systemd" && -r "/proc/$pid/cgroup" ]]; then
-        cid=$(grep -oE 'docker-[[:xdigit:]]{64}\.scope' "/proc/$pid/cgroup" 2>/dev/null | \
+    if [[ "$SSL_INIT" == "systemd" && -r "$cgroup_file" ]]; then
+        cid=$(grep -oE 'docker-[[:xdigit:]]{64}\.scope' "$cgroup_file" 2>/dev/null | \
             sed -E 's/^docker-([[:xdigit:]]{64})\.scope$/\1/' | head -n 1 || true)
         if [[ -n "$cid" ]] && cname=$(ssl_get_docker_container_name "$cid"); then
             echo "docker:$cid:$cname"
             return 0
         fi
 
-        while IFS= read -r unit; do
-            unit="${unit##*/}"
-            for svc in "${SSL_KNOWN_SERVICES[@]}"; do
-                if [[ "$unit" == "${svc}.service" ]]; then
-                    echo "systemd:$unit"
-                    return 0
-                fi
-            done
-        done < <(grep -oE '[^/]+\.service' "/proc/$pid/cgroup" 2>/dev/null | sort -u)
+        if ssl_is_supported_listener_process "$pname"; then
+            unit=$(grep -oE '[^/]+\.service' "$cgroup_file" 2>/dev/null | sort -u | head -n 1 || true)
+            if [[ -n "$unit" ]]; then
+                echo "systemd:$unit"
+                return 0
+            fi
+        fi
     fi
 
     if [[ "${pname,,}" == "docker-proxy" ]] && command -v docker >/dev/null 2>&1; then
@@ -173,7 +182,7 @@ ssl_report_unmanaged_listener() {
 
     ssl_log ERROR "TCP $port 被无法安全自动管理的进程占用。"
     ssl_log ERROR "PID：$pid，进程：$pname"
-    ssl_log INFO "未确认其对应的 systemd/OpenRC 服务，工具不会强制停止该进程。"
+    ssl_log INFO "未确认其对应的 systemd 服务或 Docker 容器，工具不会强制停止该进程。"
     ssl_log INFO "请手动停止该服务后重新执行，或将其配置为受支持的服务单元。"
 }
 

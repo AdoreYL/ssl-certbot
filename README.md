@@ -65,7 +65,7 @@ sslcert ssl example.com
 
 1. **域名与 DNS 预检**：校验域名格式合法性，检查公网 DNS 是否已正确解析到本机公网 IP。
 2. **端口占用检测**：检测当前占用 TCP 80 与 443 端口的具体服务进程。
-3. **安全暂停已确认服务**：仅当监听 PID 可由 `/proc/<PID>/cgroup` 确认归属 Nginx、Caddy、x-ui 或 3x-ui 的白名单 systemd 单元时，才会暂停该单元；若 cgroup 明确归属某个正在运行的 Docker 容器，则只暂停该容器；检测到 `docker-proxy` 时仅处理可关联到同端口发布映射的 Docker 容器。无法确认来源的进程不会被强制停止。
+3. **安全暂停已确认服务**：仅当受支持的 Web 服务监听 PID 可由 `/proc/<PID>/cgroup` 确认归属实际 systemd 单元时，才会暂停该单元；若 cgroup 明确归属某个正在运行的 Docker 容器，则只暂停该容器；检测到 `docker-proxy` 时仅处理可关联到同端口发布映射的 Docker 容器。无法确认来源的进程不会被强制停止。
 4. **HTTP-01 验证**：启动 `acme.sh --standalone` 监听 80 端口，完成 Let's Encrypt 证书申请与签发。
 5. **规范归档证书**：将签发的证书与私钥统一安装归档到 `/root/cert/<domain>/` 目录。
 6. **现场完全复原**：无论签发成功、失败或人为中断（`Ctrl+C`），自动恢复先前暂停的所有服务，保障业务连续性。
@@ -104,14 +104,16 @@ sslcert ssl example.com
 
 ## 适配服务检测清单
 
-当以下 systemd 服务实际占用了 TCP 80 或 443 端口，且监听 PID 的 cgroup 可确认归属该单元时，工具会自动进行识别与受控启停：
+当以下进程实际占用了 TCP 80 或 443 端口，且监听 PID 的 cgroup 可确认归属某个 systemd 单元时，工具会自动进行识别与受控启停。服务单元名无需固定，例如由 Nginx 监听的 `my-nginx.service` 会被识别为实际的 `my-nginx.service`：
 
-| 服务名称 | Systemd 服务名 |
-|----------|----------------|
-| Nginx | `nginx.service` |
-| Caddy | `caddy.service` |
-| x-ui | `x-ui.service` |
-| 3x-ui | `3x-ui.service` |
+| 受支持进程 | 典型服务 |
+|------------|----------|
+| `nginx` / `openresty` | Nginx / OpenResty |
+| `caddy` | Caddy |
+| `apache2` / `httpd` | Apache HTTP Server |
+| `haproxy` | HAProxy |
+| `traefik` | Traefik |
+| `x-ui` / `3x-ui` | x-ui / 3x-ui |
 
 对于 Docker 服务，工具只有在监听 PID 的 cgroup 明确归属某个正在运行的容器，或实际观测到同端口的 `docker-proxy` 且能匹配端口发布映射时，才会暂停对应容器，绝不停止 Docker 守护进程（dockerd）。无法可靠关联监听端口的 Docker 服务需要手动处理。
 
@@ -136,7 +138,7 @@ sslcert ssl example.com
 - 仅支持单域名证书（不支持通配符通配证书与多 SAN 域名合并）
 - 不主动侵入修改 Nginx/Caddy/x-ui 等服务的原有配置文件
 - 不自动 reload 或 restart 服务；服务如何加载更新后的证书由管理员自行配置
-- 仅自动暂停能够确认归属白名单 systemd 单元的监听服务；手工启动、自定义单元或其他无法安全识别的进程会提示手动处理
+- 仅自动暂停可确认归属实际 systemd 单元的受支持监听进程；手工启动或其他无法安全识别的进程会提示手动处理
 - 不支持申请纯 IP 证书与自签名证书
 - 专为 Debian/Ubuntu/Alpine 优化
 

@@ -16,8 +16,11 @@ readonly SSL_CRON_MARKER="# ssl-certbot auto-renew"
 readonly SSL_PROJECT_TAG="ssl-certbot"
 readonly SSL_W_BIN="/usr/local/bin/w"
 
-# Known services (service-unit -> process name pattern)
-readonly -a SSL_KNOWN_SERVICES=("nginx" "caddy" "x-ui" "3x-ui")
+# Supported listener process names. The actual systemd unit is resolved from
+# the listener PID's cgroup at runtime and is never derived from this list.
+readonly -a SSL_SUPPORTED_LISTENER_PROCESSES=(
+    "nginx" "caddy" "apache2" "httpd" "haproxy" "traefik" "openresty" "x-ui" "3x-ui"
+)
 
 # ── Colour helpers (disabled when not a tty) ────────────────────────
 if [[ -t 1 ]]; then
