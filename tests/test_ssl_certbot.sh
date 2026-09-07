@@ -403,6 +403,22 @@ test_entry_supports_uninstall_command() {
     assert_contains "$ssl_script" '"${LIB_DIR}/uninstall.sh"' "卸载命令调用已安装的卸载脚本"
 }
 
+test_acme_installer_does_not_use_removed_install_online_option() {
+    local common
+    common=$(<"$PROJECT_ROOT/src/common.sh")
+
+    assert_not_contains "$common" "--install-online" "acme.sh 安装不使用已废弃的 install-online 参数"
+}
+
+test_ssl_menu_includes_update_and_uninstall_actions() {
+    local ssl_script
+    ssl_script=$(<"$PROJECT_ROOT/src/ssl-certbot.sh")
+
+    assert_contains "$ssl_script" "7. 更新脚本" "交互菜单提供更新脚本选项"
+    assert_contains "$ssl_script" "8. 卸载 ssl-certbot" "交互菜单提供卸载选项"
+    assert_contains "$ssl_script" "update)" "命令行支持更新脚本子命令"
+}
+
 test_renew_does_not_force_reissue
 test_certificate_expiry_uses_china_standard_time_format
 test_remove_certificate_removes_local_files_and_acme_record
@@ -419,6 +435,8 @@ test_remote_installer_is_independent_bootstrap
 test_installer_deploys_uninstaller
 test_entry_help_uses_installed_command_name
 test_entry_supports_uninstall_command
+test_acme_installer_does_not_use_removed_install_online_option
+test_ssl_menu_includes_update_and_uninstall_actions
 
 if [[ "$fail_count" -ne 0 ]]; then
     printf '%s test(s) failed; %s passed.\n' "$fail_count" "$pass_count" >&2

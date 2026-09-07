@@ -57,6 +57,7 @@ sslcert ssl example.com
 | `w ssl renew` | 批量手动续期所有证书 |
 | `w ssl renew <domain>` | 手动续期指定域名的证书 |
 | `w ssl remove <domain>` | 删除本地证书文件及 acme.sh 记录（需输入 `yes` 确认） |
+| `w ssl update` | 更新 ssl-certbot 脚本，保留证书与自动续期任务 |
 | `w ssl uninstall` | 卸载 ssl-certbot（保留证书、acme.sh 和日志） |
 | `w ssl logs` | 查看工具操作与续期日志 |
 | `w ssl help` | 查看命令行帮助信息 |

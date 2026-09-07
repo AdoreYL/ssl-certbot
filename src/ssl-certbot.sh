@@ -46,9 +46,11 @@ ssl_interactive_menu() {
     echo "  4. 查看运行日志"
     echo "  5. 查看帮助"
     echo "  6. 删除证书"
+    echo "  7. 更新脚本"
+    echo "  8. 卸载 ssl-certbot"
     echo "  0. 退出"
     echo ""
-    read -rp "  请选择 [0-6]: " choice
+    read -rp "  请选择 [0-8]: " choice
 
     case "$choice" in
         1)
@@ -73,6 +75,8 @@ ssl_interactive_menu() {
         4) ssl_cmd_logs ;;
         5) ssl_cmd_help ;;
         6) ssl_cmd_remove ;;
+        7) ssl_cmd_update ;;
+        8) ssl_cmd_uninstall ;;
         0) exit 0 ;;
         *) ssl_log ERROR "无效的选项。" ;;
     esac
@@ -109,6 +113,20 @@ ssl_cmd_uninstall() {
     fi
 
     exec "$uninstall_script"
+}
+
+# ── Command: update ────────────────────────────────────────────────
+ssl_cmd_update() {
+    local installer_url="https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh"
+
+    echo ""
+    echo "${C_BOLD}正在更新 ssl-certbot...${C_RESET}"
+    echo "  更新会保留已有证书、acme.sh、日志和自动续期任务。"
+
+    if ! curl -fsSL "$installer_url" | bash; then
+        ssl_log ERROR "脚本更新失败。"
+        return 1
+    fi
 }
 
 # ── Command: apply ──────────────────────────────────────────────────
@@ -298,6 +316,7 @@ ssl_cmd_help() {
     echo "    w ssl status [域名]      查看证书状态"
     echo "    w ssl renew [域名]       手动续期证书"
     echo "    w ssl remove <域名>      删除本地证书与 acme.sh 记录"
+    echo "    w ssl update              更新 ssl-certbot 脚本"
     echo "    w ssl uninstall          卸载 ssl-certbot（保留证书与 acme.sh）"
     echo "    w ssl logs               查看最近日志"
     echo "    w ssl help               查看帮助"
@@ -411,6 +430,9 @@ main() {
             ;;
         uninstall)
             ssl_cmd_uninstall
+            ;;
+        update)
+            ssl_cmd_update
             ;;
         logs|log)
             ssl_cmd_logs

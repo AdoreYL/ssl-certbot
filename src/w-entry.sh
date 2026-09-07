@@ -29,6 +29,7 @@ case "$subcmd_lower" in
         echo "    ${command_name} ssl status          查看证书状态"
         echo "    ${command_name} ssl renew           续期证书"
         echo "    ${command_name} ssl remove <域名>  删除证书"
+        echo "    ${command_name} ssl update          更新 ssl-certbot"
         echo "    ${command_name} ssl uninstall       卸载 ssl-certbot"
         echo "    ${command_name} ssl logs            查看日志"
         echo "    ${command_name} ssl help            SSL 帮助"

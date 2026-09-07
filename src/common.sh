@@ -186,7 +186,6 @@ ssl_ensure_acme() {
     fi
     ssl_log INFO "正在安装 acme.sh..."
     curl -fsSL https://get.acme.sh | sh -s -- \
-        --install-online \
         --home "$SSL_ACME_HOME" \
         --no-cron \
         --no-profile \
