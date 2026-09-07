@@ -185,14 +185,12 @@ ssl_ensure_acme() {
         return 0
     fi
     ssl_log INFO "正在安装 acme.sh..."
-    curl -fsSL https://get.acme.sh | sh -s -- \
-        --home "$SSL_ACME_HOME" \
-        --no-cron \
-        --no-profile \
-        --accountemail "ssl-certbot@localhost"
+    curl -fsSL https://get.acme.sh | sh -s -- email=ssl-certbot@localhost
     if [[ ! -f "$SSL_ACME_HOME/acme.sh" ]]; then
         ssl_die "acme.sh 安装失败。"
     fi
+    "$SSL_ACME_HOME/acme.sh" --uninstall-cronjob >/dev/null 2>&1 || \
+        ssl_log WARN "未能移除 acme.sh 自带的 cron 任务，请手动检查 crontab。"
     # Default CA = Let's Encrypt
     "$SSL_ACME_HOME/acme.sh" --set-default-ca --server letsencrypt 2>/dev/null || true
     ssl_log INFO "acme.sh 安装完成。"

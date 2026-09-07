@@ -410,6 +410,15 @@ test_acme_installer_does_not_use_removed_install_online_option() {
     assert_not_contains "$common" "--install-online" "acme.sh 安装不使用已废弃的 install-online 参数"
 }
 
+test_acme_bootstrap_only_receives_account_email() {
+    local common
+    common=$(<"$PROJECT_ROOT/src/common.sh")
+
+    assert_contains "$common" "sh -s -- email=ssl-certbot@localhost" "acme.sh 引导器只接收账户邮箱"
+    assert_not_contains "$common" "--home \"\$SSL_ACME_HOME\"" "acme.sh 引导器不接收内部安装参数"
+    assert_contains "$common" '"$SSL_ACME_HOME/acme.sh" --uninstall-cronjob' "安装后移除 acme.sh 自己的 cron 任务"
+}
+
 test_ssl_menu_includes_update_and_uninstall_actions() {
     local ssl_script
     ssl_script=$(<"$PROJECT_ROOT/src/ssl-certbot.sh")
@@ -436,6 +445,7 @@ test_installer_deploys_uninstaller
 test_entry_help_uses_installed_command_name
 test_entry_supports_uninstall_command
 test_acme_installer_does_not_use_removed_install_online_option
+test_acme_bootstrap_only_receives_account_email
 test_ssl_menu_includes_update_and_uninstall_actions
 
 if [[ "$fail_count" -ne 0 ]]; then
