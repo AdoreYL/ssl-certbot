@@ -25,11 +25,11 @@ source "${LIB_DIR}/cron.sh"
 # ── Trap handler ────────────────────────────────────────────────────
 _ssl_cleanup() {
     local exit_code=$?
-    ssl_log INFO "Cleanup triggered (exit code: $exit_code)..."
+    ssl_log INFO "正在清理（退出码：$exit_code）..."
     ssl_restore_services
     ssl_release_lock
     if [[ "$exit_code" -ne 0 ]]; then
-        ssl_log WARN "Process exited with errors. Services have been restored."
+        ssl_log WARN "流程异常退出，已尝试恢复本次暂停的服务。"
     fi
 }
 trap _ssl_cleanup EXIT INT TERM HUP
@@ -37,31 +37,32 @@ trap _ssl_cleanup EXIT INT TERM HUP
 # ── Interactive menu ────────────────────────────────────────────────
 ssl_interactive_menu() {
     echo ""
-    echo "${C_BOLD}${C_CYAN}SSL Certificate Manager${C_RESET}"
+    echo "${C_BOLD}${C_CYAN}SSL 证书管理${C_RESET}"
     echo "────────────────────────────────────────"
     echo ""
-    echo "  1. Apply or renew certificate"
-    echo "  2. List certificates"
-    echo "  3. Show certificate status"
-    echo "  4. View logs"
-    echo "  5. Help"
-    echo "  0. Exit"
+    echo "  1. 申请或续期证书"
+    echo "  2. 查看证书列表"
+    echo "  3. 查看证书状态"
+    echo "  4. 查看运行日志"
+    echo "  5. 查看帮助"
+    echo "  0. 退出"
     echo ""
-    read -rp "  Select [0-5]: " choice
+    read -rp "  请选择 [0-5]: " choice
 
     case "$choice" in
         1)
             echo ""
-            echo "${C_BOLD}Important:${C_RESET}"
-            echo "  - Domain must resolve to this VPS's public IP"
-            echo "  - TCP 80 must be reachable from the internet"
-            echo "  - Services on ports 80/443 will be briefly stopped"
-            echo "  - Services will be restored after completion"
-            echo "  - This tool will NOT force-kill unknown processes"
+            echo "${C_BOLD}重要提示：${C_RESET}"
+            echo "  - 域名必须已解析到本机公网 IP"
+            echo "  - 公网 TCP 80 必须可访问"
+            echo "  - 工具只会暂停实际占用 80 或 443 端口、且能够确认管理方式的服务"
+            echo "  - 无法确认来源的进程不会被强制停止"
+            echo "  - 证书申请完成后，工具会恢复本次暂停的服务"
+            echo "  - 工具只申请、续期和保存证书，不自动重载 Nginx、Caddy、x-ui 或 3x-ui"
             echo ""
-            read -rp "  Enter domain (e.g. example.com): " domain
+            read -rp "  请输入域名（例如 example.com）：" domain
             if [[ -z "$domain" ]]; then
-                ssl_log ERROR "No domain entered."
+                ssl_log ERROR "未输入域名。"
                 return 1
             fi
             ssl_cmd_apply "$domain"
@@ -71,7 +72,7 @@ ssl_interactive_menu() {
         4) ssl_cmd_logs ;;
         5) ssl_cmd_help ;;
         0) exit 0 ;;
-        *) ssl_log ERROR "Invalid selection." ;;
+        *) ssl_log ERROR "无效的选项。" ;;
     esac
 }
 
@@ -84,8 +85,8 @@ ssl_cmd_apply() {
         return 1
     fi
 
-    ssl_log INFO "Starting certificate process for: $domain"
-    ssl_log INFO "OS: $SSL_OS $SSL_OS_VER | Init: $SSL_INIT"
+    ssl_log INFO "开始处理证书：$domain"
+    ssl_log INFO "系统：$SSL_OS $SSL_OS_VER，初始化系统：$SSL_INIT"
 
     # Ensure acme.sh is available
     ssl_ensure_acme
@@ -98,38 +99,38 @@ ssl_cmd_apply() {
 
     # Pause services on 80/443
     echo ""
-    echo "${C_BOLD}Checking ports 80 and 443...${C_RESET}"
+    echo "${C_BOLD}正在检查 80 和 443 端口...${C_RESET}"
     if ! ssl_pause_port_services; then
-        ssl_log ERROR "Cannot proceed: unable to free required ports."
+        ssl_log ERROR "无法继续：未能安全释放所需端口。"
         return 1
     fi
 
     # Issue certificate
     echo ""
-    echo "${C_BOLD}Requesting certificate...${C_RESET}"
+    echo "${C_BOLD}正在申请证书...${C_RESET}"
     local issue_result=0
     ssl_issue_cert "$domain" || issue_result=$?
 
     # Restore services (always, regardless of result)
     echo ""
-    echo "${C_BOLD}Restoring services...${C_RESET}"
+    echo "${C_BOLD}正在恢复服务...${C_RESET}"
     local restore_result=0
     ssl_restore_services || restore_result=$?
 
     if [[ "$issue_result" -ne 0 ]]; then
-        ssl_log ERROR "Certificate issuance failed for $domain"
-        ssl_log ERROR "Services have been restored to their original state."
+        ssl_log ERROR "$domain 的证书申请失败。"
+        ssl_log ERROR "已尝试恢复本次暂停的服务。"
         return 1
     fi
 
     if [[ "$restore_result" -ne 0 ]]; then
-        ssl_log ERROR "Certificate was issued, but one or more services could not be restored."
+        ssl_log ERROR "证书已签发，但一个或多个服务未能恢复。"
         return 1
     fi
 
     # Set up auto-renewal
     echo ""
-    echo "${C_BOLD}Configuring auto-renewal...${C_RESET}"
+    echo "${C_BOLD}正在配置自动续期...${C_RESET}"
     local cron_result=0
     ssl_install_cron_job || cron_result=$?
 
@@ -137,31 +138,30 @@ ssl_cmd_apply() {
     local cert_dir="${SSL_CERT_BASE}/${domain}"
     echo ""
     if [[ "$cron_result" -ne 0 ]]; then
-        echo "${C_YELLOW}${C_BOLD}Certificate issued, but auto-renewal setup failed.${C_RESET}"
+        echo "${C_YELLOW}${C_BOLD}证书已签发，但自动续期配置失败。${C_RESET}"
     else
-        echo "${C_GREEN}${C_BOLD}Certificate successfully issued!${C_RESET}"
+        echo "${C_GREEN}${C_BOLD}证书申请成功！${C_RESET}"
     fi
     echo "────────────────────────────────────────"
-    echo "  Domain:      $domain"
-    echo "  Certificate: ${cert_dir}/fullchain.pem"
-    echo "  Private key: ${cert_dir}/privkey.pem"
+    echo "  域名：$domain"
+    echo "  证书链：${cert_dir}/fullchain.pem"
+    echo "  私钥：${cert_dir}/privkey.pem"
     echo ""
-    echo "  ${C_YELLOW}Note:${C_RESET} Services paused during issuance have been restored."
-    echo "  This tool does not reload or restart services automatically."
-    echo "  Configure your service to use the paths above, then reload it yourself."
+    echo "  ${C_YELLOW}提示：${C_RESET} 已恢复本次暂停的服务。"
+    echo "  工具不会自动重载或重启服务，请自行配置服务使用上述路径并完成重载。"
     if [[ "$cron_result" -ne 0 ]]; then
         echo ""
-        echo "  ${C_RED}Warning:${C_RESET} Automatic renewal could not be configured."
-        echo "  Run '${0##*/} ssl renew' manually before the certificate expires,"
-        echo "  or check cron status and retry installation."
+        echo "  ${C_RED}警告：${C_RESET} 无法配置自动续期。"
+        echo "  请在证书到期前手动执行 '${0##*/} ssl renew'，"
+        echo "  或检查 cron 状态后重新配置。"
     fi
     echo ""
 
     if [[ "$cron_result" -ne 0 ]]; then
-        ssl_log WARN "Certificate issued for $domain but cron setup failed."
+        ssl_log WARN "$domain 的证书已签发，但 cron 配置失败。"
         return 1
     fi
-    ssl_log INFO "Certificate process completed successfully for $domain"
+    ssl_log INFO "$domain 的证书流程已完成。"
 }
 
 # ── Command: renew ──────────────────────────────────────────────────
@@ -169,7 +169,7 @@ ssl_cmd_renew() {
     local domain="${1:-}"
 
     if [[ -z "$domain" ]]; then
-        ssl_log INFO "Renewing all certificates..."
+        ssl_log INFO "正在续期全部证书..."
         ssl_acquire_lock
         if ssl_renew_managed_certificates; then
             return 0
@@ -186,7 +186,7 @@ ssl_cmd_renew() {
 
     local fullchain="${SSL_CERT_BASE}/${domain}/fullchain.pem"
     if [[ ! -f "$fullchain" ]]; then
-        ssl_log ERROR "No certificate found for: $domain"
+        ssl_log ERROR "未找到域名证书：$domain"
         return 1
     fi
 
@@ -198,15 +198,15 @@ ssl_cmd_renew() {
     fi
 
     if [[ "$renewal_state" -eq 1 ]]; then
-        ssl_log INFO "$domain: valid for more than 30 days, skipping renewal."
+        ssl_log INFO "$domain：有效期超过 30 天，跳过续期。"
         return 0
     elif [[ "$renewal_state" -ne 0 ]]; then
-        ssl_log ERROR "$domain: cannot determine certificate expiry; renewal skipped."
+        ssl_log ERROR "$domain：无法确定证书到期时间，已跳过续期。"
         return 1
     fi
 
     if ! ssl_pause_port_services; then
-        ssl_log ERROR "Cannot free ports for renewal."
+        ssl_log ERROR "无法安全释放续期所需端口。"
         return 1
     fi
 
@@ -217,19 +217,19 @@ ssl_cmd_renew() {
     ssl_restore_services || restore_result=$?
 
     if [[ "$renew_result" -ne 0 ]]; then
-        ssl_log ERROR "Renewal failed for $domain. Services restored."
+        ssl_log ERROR "$domain 续期失败，已尝试恢复服务。"
         return 1
     fi
 
     if [[ "$restore_result" -ne 0 ]]; then
-        ssl_log ERROR "Certificate renewed, but one or more services could not be restored."
+        ssl_log ERROR "证书已续期，但一个或多个服务未能恢复。"
         return 1
     fi
 
     echo ""
-    echo "${C_GREEN}Certificate renewed for $domain${C_RESET}"
-    echo "  Services have been restored to their original state."
-    echo "  Services are not reloaded automatically; reload them to use the new certificate."
+    echo "${C_GREEN}$domain 的证书已续期${C_RESET}"
+    echo "  已恢复本次暂停的服务。"
+    echo "  服务不会自动重载，请自行重载以使用新证书。"
     echo ""
 }
 
@@ -240,11 +240,11 @@ ssl_cmd_logs() {
         log_file="$SSL_LOG_FALLBACK"
     fi
     if [[ ! -f "$log_file" ]]; then
-        echo "No log file found."
+        echo "未找到日志文件。"
         return 0
     fi
     echo ""
-    echo "${C_BOLD}Recent Logs${C_RESET} ($log_file)"
+    echo "${C_BOLD}最近日志${C_RESET} ($log_file)"
     echo "────────────────────────────────────────"
     tail -n 50 "$log_file"
     echo ""
@@ -253,39 +253,39 @@ ssl_cmd_logs() {
 # ── Command: help ───────────────────────────────────────────────────
 ssl_cmd_help() {
     echo ""
-    echo "${C_BOLD}${C_CYAN}SSL Certificate Manager - Help${C_RESET}"
+    echo "${C_BOLD}${C_CYAN}SSL 证书管理 - 帮助${C_RESET}"
     echo "────────────────────────────────────────"
     echo ""
-    echo "  ${C_BOLD}Usage:${C_RESET}"
-    echo "    w ssl                    Interactive menu"
-    echo "    w ssl <domain>           Apply or renew certificate"
-    echo "    w ssl list               List managed certificates"
-    echo "    w ssl status [domain]    Show certificate status"
-    echo "    w ssl renew [domain]     Manually renew certificate(s)"
-    echo "    w ssl logs               View recent logs"
-    echo "    w ssl help               Show this help"
+    echo "  ${C_BOLD}用法：${C_RESET}"
+    echo "    w ssl                    打开交互式菜单"
+    echo "    w ssl <域名>             申请或续期证书"
+    echo "    w ssl list               列出已管理的证书"
+    echo "    w ssl status [域名]      查看证书状态"
+    echo "    w ssl renew [域名]       手动续期证书"
+    echo "    w ssl logs               查看最近日志"
+    echo "    w ssl help               查看帮助"
     echo ""
-    echo "  ${C_BOLD}How it works:${C_RESET}"
-    echo "    1. Domain must resolve to this server's public IP"
-    echo "    2. TCP 80 must be reachable (HTTP-01 validation)"
-    echo "    3. Services on 80/443 are briefly paused during issuance"
-    echo "    4. All paused services are restored afterward"
-    echo "    5. Certificates auto-renew via cron"
+    echo "  ${C_BOLD}工作方式：${C_RESET}"
+    echo "    1. 域名必须解析到本机公网 IP"
+    echo "    2. TCP 80 必须可访问，用于 HTTP-01 验证"
+    echo "    3. 仅暂停可确认管理方式且实际占用 80/443 的服务"
+    echo "    4. 完成后恢复本次暂停的服务"
+    echo "    5. 通过 cron 自动续期"
     echo ""
-    echo "  ${C_BOLD}Certificate paths:${C_RESET}"
+    echo "  ${C_BOLD}证书路径：${C_RESET}"
     echo "    /root/cert/<domain>/fullchain.pem"
     echo "    /root/cert/<domain>/privkey.pem"
     echo ""
-    echo "  ${C_BOLD}Supported systems:${C_RESET}"
+    echo "  ${C_BOLD}支持系统：${C_RESET}"
     echo "    Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Alpine 3.x"
     echo ""
-    echo "  ${C_BOLD}Notes:${C_RESET}"
-    echo "    - TCP 80 is required for HTTP-01 validation"
-    echo "    - TCP 443 is in the pause/restore scope but not required for validation"
-    echo "    - Unknown processes on 80/443 will NOT be killed"
-    echo "    - Services are not reloaded automatically after certificate changes"
-    echo "    - No Docker, Certbot, or heavy runtimes required"
-    echo "    - Powered by acme.sh + Let's Encrypt"
+    echo "  ${C_BOLD}说明：${C_RESET}"
+    echo "    - HTTP-01 验证必须使用 TCP 80"
+    echo "    - TCP 443 属于暂停/恢复范围，但验证本身不需要它"
+    echo "    - 无法确认来源的进程不会被强制停止"
+    echo "    - 证书变更后不会自动重载服务"
+    echo "    - 不需要 Docker、Certbot 或大型运行时"
+    echo "    - 基于 acme.sh 与 Let's Encrypt"
     echo ""
 }
 
@@ -293,7 +293,7 @@ ssl_cmd_help() {
 ssl_check_dns() {
     local domain="$1"
 
-    ssl_log INFO "Checking DNS resolution for $domain..."
+    ssl_log INFO "正在检查 $domain 的 DNS 解析..."
 
     # Get VPS public IP
     local vps_ip=""
@@ -303,11 +303,11 @@ ssl_check_dns() {
              echo "")
 
     if [[ -z "$vps_ip" ]]; then
-        ssl_log WARN "Could not determine VPS public IP. Proceeding anyway..."
+        ssl_log WARN "无法确定 VPS 公网 IP，将继续执行。"
         return 0
     fi
 
-    ssl_log INFO "VPS public IP: $vps_ip"
+    ssl_log INFO "VPS 公网 IP：$vps_ip"
 
     # Resolve domain
     local domain_ip=""
@@ -323,20 +323,20 @@ ssl_check_dns() {
     fi
 
     if [[ -z "$domain_ip" ]]; then
-        ssl_log ERROR "Cannot resolve domain: $domain"
-        ssl_log ERROR "Please ensure DNS is configured and propagated."
+        ssl_log ERROR "无法解析域名：$domain"
+        ssl_log ERROR "请确认 DNS 已配置并完成传播。"
         return 1
     fi
 
-    ssl_log INFO "Domain $domain resolves to: $domain_ip"
+    ssl_log INFO "域名 $domain 解析到：$domain_ip"
 
     if [[ "$domain_ip" != "$vps_ip" ]]; then
-        ssl_log WARN "Domain IP ($domain_ip) does not match VPS IP ($vps_ip)."
-        ssl_log WARN "If this VPS uses a different public IP or IPv6, this may be expected."
+        ssl_log WARN "域名 IP（$domain_ip）与 VPS IP（$vps_ip）不一致。"
+        ssl_log WARN "若 VPS 使用其他公网 IP 或 IPv6，这可能符合预期。"
         echo ""
-        read -rp "  Continue anyway? [y/N]: " confirm
+        read -rp "  仍要继续吗？[y/N]：" confirm
         if [[ ! "$confirm" =~ ^[yY]$ ]]; then
-            ssl_log INFO "Aborted by user."
+            ssl_log INFO "用户已取消。"
             return 1
         fi
     fi

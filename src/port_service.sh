@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
 # ssl-certbot port detection and service management
-# Handles: port scanning, service identification, pause/resume
 
-# ── Port detection ──────────────────────────────────────────────────
 # Returns lines: PID PROCESS PORT PROTO
-# e.g. "1234 nginx 80 tcp"
 ssl_detect_port_listeners() {
     local port="$1"
     local results=""
 
     if command -v ss >/dev/null 2>&1; then
-        # ss -tlnp: extract PIDs from lines matching the port
         results=$(ss -tlnp 2>/dev/null | grep -E "[:.](${port})[[:space:]]" | \
             grep -oE 'pid=[0-9]+' | sed 's/pid=//' | sort -u | while read -r pid; do
                 local pname
@@ -28,96 +24,73 @@ ssl_detect_port_listeners() {
         ' 2>/dev/null || true)
     elif command -v lsof >/dev/null 2>&1; then
         results=$(lsof -i "TCP:${port}" -s TCP:LISTEN -n -P 2>/dev/null | awk '
-            NR > 1 {
-                print $2, $1, '"$port"', "tcp"
-            }
+            NR > 1 { print $2, $1, '"$port"', "tcp" }
         ' 2>/dev/null || true)
     else
-        ssl_die "No port detection tool available (ss, netstat, or lsof required)."
+        ssl_die "未找到端口检测工具（需要 ss、netstat 或 lsof）。"
     fi
 
-    # Deduplicate by PID
-    if [[ -n "$results" ]]; then
-        echo "$results" | sort -u -k1,1
-    fi
+    [[ -z "$results" ]] || echo "$results" | sort -u -k1,1
 }
 
-# Check if a specific port is free
 ssl_is_port_free() {
-    local port="$1"
-    local listeners
-    listeners=$(ssl_detect_port_listeners "$port")
-    [[ -z "$listeners" ]]
+    [[ -z "$(ssl_detect_port_listeners "$1")" ]]
 }
 
-# ── Service identification ──────────────────────────────────────────
-# Given a PID, determine if it belongs to a known service
-# Returns: "systemd:nginx" or "openrc:nginx" or "docker:CONTAINER_ID:name" or ""
+# Process names are not reliable service ownership. Return a unit only when
+# /proc/<PID>/cgroup proves that this listener belongs to a known systemd unit.
+# Output: systemd:unit.service, docker-proxy:PID, or an empty string.
 ssl_identify_service() {
     local pid="$1"
     local pname="$2"
+    local unit svc
 
-    # Normalize process name to lowercase
-    local pname_lower
-    pname_lower=$(echo "$pname" | tr '[:upper:]' '[:lower:]')
-
-    # Check known system services
-    for svc in "${SSL_KNOWN_SERVICES[@]}"; do
-        if [[ "$pname_lower" == "$svc" ]] || [[ "$pname_lower" == "${svc}.service" ]]; then
-            # Verify it's managed by init system
-            if [[ "$SSL_INIT" == "systemd" ]]; then
-                local unit="${svc}.service"
-                if systemctl list-units --type=service --all 2>/dev/null | grep -q "$unit"; then
-                    echo "systemd:$svc"
+    if [[ "$SSL_INIT" == "systemd" && -r "/proc/$pid/cgroup" ]]; then
+        while IFS= read -r unit; do
+            unit="${unit##*/}"
+            for svc in "${SSL_KNOWN_SERVICES[@]}"; do
+                if [[ "$unit" == "${svc}.service" ]]; then
+                    echo "systemd:$unit"
                     return 0
                 fi
-            elif [[ "$SSL_INIT" == "openrc" ]]; then
-                if rc-service --list 2>/dev/null | grep -q "^${svc}$"; then
-                    echo "openrc:$svc"
-                    return 0
-                fi
-            fi
-            # Even without init management, we recognize the process
-            echo "process:$svc"
-            return 0
-        fi
-    done
+            done
+        done < <(grep -oE '[^/]+\.service' "/proc/$pid/cgroup" 2>/dev/null | sort -u)
+    fi
 
-    # Check if PID belongs to a Docker container's proxy
-    if [[ "$pname_lower" == "docker-proxy" ]] && command -v docker >/dev/null 2>&1; then
+    if [[ "${pname,,}" == "docker-proxy" ]] && command -v docker >/dev/null 2>&1; then
         echo "docker-proxy:$pid"
         return 0
     fi
 
-    # Unknown
     echo ""
 }
 
-# ── Docker container detection ──────────────────────────────────────
-# Find Docker containers with host port mappings for 80 or 443
-# Output: CONTAINER_ID CONTAINER_NAME PORT
-ssl_detect_docker_containers() {
-    if ! command -v docker >/dev/null 2>&1; then
-        return 0
-    fi
-    if ! docker info >/dev/null 2>&1; then
-        return 0
-    fi
+# Output running containers that publish the requested host port. It is used
+# only after a docker-proxy listener was observed for that same port.
+ssl_detect_docker_containers_for_port() {
+    local requested_port="$1"
 
-    # Inspect structured bindings so loopback and specific-IP mappings work.
+    command -v docker >/dev/null 2>&1 || return 0
+    docker info >/dev/null 2>&1 || return 0
+
     docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null | while read -r cid cname; do
         [[ -z "$cid" ]] && continue
         docker inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{.HostIp}} {{.HostPort}}{{"\n"}}{{end}}{{end}}' "$cid" 2>/dev/null | \
             while read -r host_ip host_port; do
-                case "$host_port" in
-                    80|443) echo "$cid $cname $host_port" ;;
-                esac
+                [[ "$host_port" == "$requested_port" ]] && echo "$cid $cname $requested_port"
             done
     done
 }
 
-# ── State recording ─────────────────────────────────────────────────
-# Records what was paused so we can restore it
+# A read-only helper retained for diagnostics and regression tests.
+ssl_detect_docker_containers() {
+    local port result=""
+    for port in 80 443; do
+        result+="$(ssl_detect_docker_containers_for_port "$port")"$'\n'
+    done
+    printf '%s' "$result" | sed '/^$/d'
+}
+
 SSL_PAUSED_FILE=""
 
 ssl_init_state() {
@@ -126,204 +99,189 @@ ssl_init_state() {
     : > "$SSL_PAUSED_FILE"
 }
 
+# State format: manager:identifier:details
 ssl_record_paused() {
-    # type:identifier:ports:stop_cmd:start_cmd
-    echo "$*" >> "$SSL_PAUSED_FILE"
+    echo "$1:$2:$3" >> "$SSL_PAUSED_FILE"
 }
 
-# ── Service pause ───────────────────────────────────────────────────
 ssl_stop_service() {
-    local svc="$1"
-    ssl_log INFO "Stopping service: $svc"
-    if [[ "$SSL_INIT" == "systemd" ]]; then
-        systemctl stop "${svc}.service"
-    elif [[ "$SSL_INIT" == "openrc" ]]; then
-        rc-service "$svc" stop
-    else
-        ssl_log WARN "Unknown init system; attempting generic stop for $svc"
-        if command -v service >/dev/null 2>&1; then
-            service "$svc" stop
-        else
-            ssl_log ERROR "Cannot stop service $svc: no service manager found."
+    local manager="$1"
+    local unit="$2"
+    ssl_log INFO "正在停止服务：$unit"
+
+    case "$manager" in
+        systemd) systemctl stop "$unit" ;;
+        openrc) rc-service "$unit" stop ;;
+        *)
+            ssl_log ERROR "无法停止服务 $unit：未知的服务管理器。"
             return 1
-        fi
-    fi
+            ;;
+    esac
 }
 
 ssl_start_service() {
-    local svc="$1"
-    ssl_log INFO "Starting service: $svc"
-    if [[ "$SSL_INIT" == "systemd" ]]; then
-        systemctl start "${svc}.service"
-    elif [[ "$SSL_INIT" == "openrc" ]]; then
-        rc-service "$svc" start
-    else
-        if command -v service >/dev/null 2>&1; then
-            service "$svc" start
-        else
-            ssl_log ERROR "Cannot start service $svc: no service manager found."
+    local manager="$1"
+    local unit="$2"
+    ssl_log INFO "正在恢复服务：$unit"
+
+    case "$manager" in
+        systemd) systemctl start "$unit" ;;
+        openrc) rc-service "$unit" start ;;
+        *)
+            ssl_log ERROR "无法恢复服务 $unit：未知的服务管理器。"
             return 1
-        fi
-    fi
+            ;;
+    esac
 }
 
 ssl_stop_docker_container() {
     local cid="$1"
-    ssl_log INFO "Stopping Docker container: $cid"
+    ssl_log INFO "正在停止 Docker 容器：$cid"
     docker stop "$cid" --time 10
 }
 
 ssl_start_docker_container() {
     local cid="$1"
-    ssl_log INFO "Starting Docker container: $cid"
+    ssl_log INFO "正在恢复 Docker 容器：$cid"
     docker start "$cid"
 }
 
-# ── Main pause/resume orchestration ────────────────────────────────
-# Pause all services/containers occupying ports 80 and 443
-# Returns 0 on success, 1 if unknown processes block the ports
+ssl_report_unmanaged_listener() {
+    local port="$1"
+    local pid="$2"
+    local pname="$3"
+
+    ssl_log ERROR "TCP $port 被无法安全自动管理的进程占用。"
+    ssl_log ERROR "PID：$pid，进程：$pname"
+    ssl_log INFO "未确认其对应的 systemd/OpenRC 服务，工具不会强制停止该进程。"
+    ssl_log INFO "请手动停止该服务后重新执行，或将其配置为受支持的服务单元。"
+}
+
+# Build a complete pause plan before stopping anything. Every listener must be
+# a verified systemd unit or an observed Docker bridge listener with a matching
+# running container. Otherwise no service is interrupted.
 ssl_pause_port_services() {
     ssl_init_state
 
-    local has_unknown=0
-    local port
+    local -a pause_plan=()
+    local port listeners pid pname lport proto service_id identifier
+    local has_unmanaged=0
 
     for port in 80 443; do
-        local listeners
         listeners=$(ssl_detect_port_listeners "$port")
-
         if [[ -z "$listeners" ]]; then
-            ssl_log INFO "Port $port is free."
+            ssl_log INFO "端口 $port 空闲。"
             continue
         fi
 
         while read -r pid pname lport proto; do
             [[ -z "$pid" ]] && continue
+            service_id=$(ssl_identify_service "$pid" "$pname")
 
-            local svc_id
-            svc_id=$(ssl_identify_service "$pid" "$pname")
-
-            if [[ -z "$svc_id" ]]; then
-                # Unknown process
-                ssl_log ERROR "TCP $port is occupied by an unknown process:"
-                ssl_log ERROR "  PID: $pid"
-                ssl_log ERROR "  Process: $pname"
-                has_unknown=1
-                continue
+            if [[ "$service_id" == docker-proxy:* ]]; then
+                local docker_containers
+                docker_containers=$(ssl_detect_docker_containers_for_port "$port")
+                if [[ -z "$docker_containers" ]]; then
+                    ssl_report_unmanaged_listener "$port" "$pid" "$pname"
+                    has_unmanaged=1
+                    continue
+                fi
+                while read -r identifier pname lport; do
+                    [[ -z "$identifier" ]] && continue
+                    pause_plan+=("docker:$identifier:$pname:$port")
+                done <<< "$docker_containers"
+            elif [[ "$service_id" == systemd:* ]]; then
+                pause_plan+=("$service_id:$port")
+            else
+                ssl_report_unmanaged_listener "$port" "$pid" "$pname"
+                has_unmanaged=1
             fi
-
-            local svc_type svc_name
-            svc_type="${svc_id%%:*}"
-            svc_name="${svc_id#*:}"
-
-            case "$svc_type" in
-                systemd|openrc|process)
-                    # Check if already recorded (avoid duplicate stops)
-                    if grep -q "^service:${svc_name}:" "$SSL_PAUSED_FILE" 2>/dev/null; then
-                        continue
-                    fi
-                    if ! ssl_stop_service "$svc_name"; then
-                        ssl_log ERROR "Failed to stop service: $svc_name"
-                        ssl_restore_services
-                        return 1
-                    fi
-                    ssl_record_paused "service:${svc_name}:${port}:stop:start"
-                    ;;
-                docker-proxy)
-                    ;; # Handled via docker container detection below
-            esac
         done <<< "$listeners"
     done
 
-    # Handle Docker containers separately for clean identification
-    local docker_containers
-    docker_containers=$(ssl_detect_docker_containers)
-    if [[ -n "$docker_containers" ]]; then
-        while read -r cid cname cport; do
-            [[ -z "$cid" ]] && continue
-            if grep -q "^docker:${cid}:" "$SSL_PAUSED_FILE" 2>/dev/null; then
-                continue
-            fi
-            if ! ssl_stop_docker_container "$cid"; then
-                ssl_log ERROR "Failed to stop Docker container: $cname ($cid)"
-                ssl_restore_services
-                return 1
-            fi
-            ssl_record_paused "docker:${cid}:${cname}:${cport}"
-        done <<< "$docker_containers"
-    fi
-
-    if [[ "$has_unknown" -eq 1 ]]; then
-        ssl_log ERROR "Cannot proceed: unknown processes occupy required ports."
-        ssl_log ERROR "Please stop them manually and retry."
-        # Restore what we already stopped
-        ssl_restore_services
+    if [[ "$has_unmanaged" -ne 0 ]]; then
+        ssl_log ERROR "端口预检查失败：不会暂停任何服务。"
         return 1
     fi
 
-    # Verify ports are now free
+    local entry entry_type first second third
+    for entry in "${pause_plan[@]}"; do
+        IFS=: read -r entry_type first second third <<< "$entry"
+        case "$entry_type" in
+            systemd)
+                grep -qF "systemd:$first:" "$SSL_PAUSED_FILE" 2>/dev/null && continue
+                if ! ssl_stop_service systemd "$first"; then
+                    ssl_log ERROR "停止服务失败：$first"
+                    ssl_restore_services
+                    return 1
+                fi
+                ssl_record_paused systemd "$first" "$second"
+                ;;
+            docker)
+                grep -qF "docker:$first:" "$SSL_PAUSED_FILE" 2>/dev/null && continue
+                if ! ssl_stop_docker_container "$first"; then
+                    ssl_log ERROR "停止 Docker 容器失败：$second ($first)"
+                    ssl_restore_services
+                    return 1
+                fi
+                ssl_record_paused docker "$first" "$second:$third"
+                ;;
+        esac
+    done
+
     sleep 1
     for port in 80 443; do
         if ! ssl_is_port_free "$port"; then
-            ssl_log ERROR "Port $port is still occupied after stopping known services."
+            ssl_log ERROR "停止已识别服务后，端口 $port 仍被占用。"
             ssl_restore_services
             return 1
         fi
     done
 
-    ssl_log INFO "Ports 80 and 443 are now free."
+    ssl_log INFO "端口 80 和 443 已释放。"
     return 0
 }
 
-# ── Restore all paused services ────────────────────────────────────
 ssl_restore_services() {
     if [[ ! -f "$SSL_PAUSED_FILE" ]] || [[ ! -s "$SSL_PAUSED_FILE" ]]; then
-        ssl_log INFO "No services to restore."
+        ssl_log INFO "没有需要恢复的服务。"
         return 0
     fi
 
-    ssl_log INFO "Restoring previously paused services..."
-    local any_failed=0
+    ssl_log INFO "正在恢复本次暂停的服务..."
+    local any_failed=0 line entry_type identifier details
 
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
-
-        local entry_type
-        entry_type="${line%%:*}"
+        IFS=: read -r entry_type identifier details <<< "$line"
 
         case "$entry_type" in
-            service)
-                local svc_name
-                svc_name=$(echo "$line" | cut -d: -f2)
-                if ssl_start_service "$svc_name"; then
-                    ssl_log INFO "Restored service: $svc_name"
+            systemd|openrc)
+                if ssl_start_service "$entry_type" "$identifier"; then
+                    ssl_log INFO "已恢复服务：$identifier"
                 else
-                    ssl_log ERROR "Failed to restore service: $svc_name"
+                    ssl_log ERROR "恢复服务失败：$identifier"
                     any_failed=1
                 fi
                 ;;
             docker)
-                local cid cname
-                cid=$(echo "$line" | cut -d: -f2)
-                cname=$(echo "$line" | cut -d: -f3)
-                if ssl_start_docker_container "$cid"; then
-                    ssl_log INFO "Restored Docker container: $cname ($cid)"
+                if ssl_start_docker_container "$identifier"; then
+                    ssl_log INFO "已恢复 Docker 容器：$details ($identifier)"
                 else
-                    ssl_log ERROR "Failed to restore Docker container: $cname ($cid)"
+                    ssl_log ERROR "恢复 Docker 容器失败：$details ($identifier)"
                     any_failed=1
                 fi
                 ;;
         esac
     done < "$SSL_PAUSED_FILE"
 
-    # Clear state file
     : > "$SSL_PAUSED_FILE"
 
-    if [[ "$any_failed" -eq 1 ]]; then
-        ssl_log WARN "Some services could not be restored. Please check manually."
+    if [[ "$any_failed" -ne 0 ]]; then
+        ssl_log WARN "部分服务未能恢复，请手动检查。"
         return 1
     fi
 
-    ssl_log INFO "All services restored successfully."
+    ssl_log INFO "所有已暂停服务均已恢复。"
     return 0
 }

@@ -4,7 +4,7 @@
 # ── Cron health checks ──────────────────────────────────────────────
 ssl_cron_command_available() {
     if ! command -v crontab >/dev/null 2>&1; then
-        ssl_log WARN "crontab command not found."
+        ssl_log WARN "未找到 crontab 命令。"
         return 1
     fi
     return 0
@@ -71,7 +71,7 @@ ssl_start_cron() {
 # ── Ensure cron is available ────────────────────────────────────────
 ssl_ensure_cron() {
     if ! ssl_cron_command_available || ! ssl_cron_daemon_available; then
-        ssl_log INFO "Installing cron daemon..."
+        ssl_log INFO "正在安装 cron 服务..."
         case "$SSL_PKG" in
             apt) ssl_pkg_install cron ;;
             apk)
@@ -85,15 +85,15 @@ ssl_ensure_cron() {
 
     ssl_enable_cron_boot
     if ! ssl_cron_is_running && ! ssl_start_cron; then
-        ssl_log ERROR "Failed to set up cron. Auto-renewal will not be available."
+        ssl_log ERROR "无法配置 cron，自动续期不可用。"
         return 1
     fi
 
     if ! ssl_cron_boot_enabled; then
-        ssl_log WARN "Cron is running, but automatic startup could not be verified."
+        ssl_log WARN "cron 正在运行，但无法确认是否已设置开机启动。"
     fi
 
-    ssl_log INFO "Cron is available and running."
+    ssl_log INFO "cron 已可用且正在运行。"
     return 0
 }
 
@@ -111,12 +111,12 @@ ssl_enable_cron_boot() {
 # ── Install renewal cron job ────────────────────────────────────────
 ssl_install_cron_job() {
     if ! ssl_ensure_cron; then
-        ssl_log ERROR "Cannot install auto-renewal: cron is not available."
+        ssl_log ERROR "无法配置自动续期：cron 不可用。"
         return 1
     fi
 
     if ssl_cron_job_installed; then
-        ssl_log INFO "Auto-renewal cron job already installed."
+        ssl_log INFO "自动续期 cron 任务已存在。"
         return 0
     fi
 
@@ -130,12 +130,12 @@ ssl_install_cron_job() {
     (crontab -l 2>/dev/null || true; echo "$cron_entry") | crontab -
 
     # Verify
-    if crontab -l 2>/dev/null | grep -qF "$SSL_CRON_MARKER"; then
-        ssl_log INFO "Auto-renewal cron job installed successfully."
+    if crontab -l 2>/dev/null | grep -F "$SSL_CRON_MARKER" | grep -qF "$renew_script"; then
+        ssl_log INFO "自动续期 cron 任务已配置。"
         ssl_enable_cron_boot
         return 0
     else
-        ssl_log ERROR "Failed to install cron job."
+        ssl_log ERROR "配置 cron 任务失败。"
         return 1
     fi
 }
@@ -143,32 +143,32 @@ ssl_install_cron_job() {
 # ── Show cron status ───────────────────────────────────────────────
 ssl_cron_status() {
     echo ""
-    echo "${C_BOLD}Cron Daemon${C_RESET}"
+    echo "${C_BOLD}Cron 服务${C_RESET}"
     if ssl_cron_command_available; then
-        echo "  Command: ${C_GREEN}Available${C_RESET}"
+        echo "  命令：${C_GREEN}可用${C_RESET}"
     else
-        echo "  Command: ${C_RED}Unavailable${C_RESET}"
+        echo "  命令：${C_RED}不可用${C_RESET}"
     fi
     if ssl_cron_is_running; then
-        echo "  Status: ${C_GREEN}Running${C_RESET}"
+        echo "  状态：${C_GREEN}运行中${C_RESET}"
     else
-        echo "  Status: ${C_RED}Not running${C_RESET}"
+        echo "  状态：${C_RED}未运行${C_RESET}"
     fi
     if ssl_cron_boot_enabled; then
-        echo "  Boot:   ${C_GREEN}Enabled${C_RESET}"
+        echo "  开机启动：${C_GREEN}已启用${C_RESET}"
     else
-        echo "  Boot:   ${C_YELLOW}Not verified${C_RESET}"
+        echo "  开机启动：${C_YELLOW}未确认${C_RESET}"
     fi
 
     echo ""
-    echo "${C_BOLD}Auto-Renewal Job${C_RESET}"
+    echo "${C_BOLD}自动续期任务${C_RESET}"
     local job
     job=$(crontab -l 2>/dev/null | grep -F "$SSL_CRON_MARKER" || true)
     if [[ -n "$job" ]]; then
-        echo "  Status: ${C_GREEN}Installed${C_RESET}"
-        echo "  Entry:  $job"
+        echo "  状态：${C_GREEN}已配置${C_RESET}"
+        echo "  任务：$job"
     else
-        echo "  Status: ${C_YELLOW}Not installed${C_RESET}"
+        echo "  状态：${C_YELLOW}未配置${C_RESET}"
     fi
     echo ""
 }

@@ -111,6 +111,54 @@ EOF
     assert_contains "$result" "container-a api 443" "识别绑定到具体 IPv4 地址:443 的 Docker 容器"
 }
 
+test_process_name_without_verified_unit_is_unmanaged() {
+    local result
+    if ! result=$( (
+        SSL_INIT="systemd"
+        source "$PROJECT_ROOT/src/port_service.sh"
+        ssl_identify_service "$$" "nginx"
+    ) ); then
+        fail "未归属白名单服务单元的 nginx 进程不会被自动管理"
+        return
+    fi
+
+    if [[ -z "$result" ]]; then
+        pass "未归属白名单服务单元的 nginx 进程不会被自动管理"
+    else
+        fail "未归属白名单服务单元的 nginx 进程不会被自动管理"
+    fi
+}
+
+test_preflight_does_not_stop_when_any_listener_is_unmanaged() {
+    local case_dir="$TEST_TMP/preflight"
+    local stopped_marker="$case_dir/stopped"
+    mkdir -p "$case_dir/state"
+
+    if (
+        SSL_STATE_DIR="$case_dir/state"
+        SSL_INIT="systemd"
+        ssl_log() { :; }
+        source "$PROJECT_ROOT/src/port_service.sh"
+        ssl_detect_port_listeners() {
+            case "$1" in
+                80) printf '%s\n' '101 nginx 80 tcp' ;;
+                443) printf '%s\n' '202 unknown 443 tcp' ;;
+            esac
+        }
+        ssl_identify_service() {
+            [[ "$1" == "101" ]] && printf '%s\n' 'systemd:nginx.service'
+        }
+        ssl_stop_service() { : > "$stopped_marker"; }
+        ssl_pause_port_services
+    ); then
+        fail "存在未知监听进程时预检不停止任何服务"
+    elif [[ ! -e "$stopped_marker" ]]; then
+        pass "存在未知监听进程时预检不停止任何服务"
+    else
+        fail "存在未知监听进程时预检不停止任何服务"
+    fi
+}
+
 test_renew_skip_does_not_pause_services() {
     local case_dir="$TEST_TMP/skip"
     local pause_marker="$case_dir/pause.called"
@@ -191,6 +239,8 @@ test_entry_help_uses_installed_command_name() {
 
 test_renew_does_not_force_reissue
 test_docker_inspect_finds_non_wildcard_bindings
+test_process_name_without_verified_unit_is_unmanaged
+test_preflight_does_not_stop_when_any_listener_is_unmanaged
 test_renew_skip_does_not_pause_services
 test_renew_failure_returns_nonzero
 test_remote_installer_is_independent_bootstrap

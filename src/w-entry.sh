@@ -16,25 +16,25 @@ case "$subcmd_lower" in
         ;;
     ""|help|--help|-h)
         echo ""
-        echo "  ${command_name} - VPS Management Tool"
+        echo "  ${command_name} - VPS 管理工具"
         echo ""
-        echo "  Usage:"
-        echo "    ${command_name} ssl [subcommand]    SSL certificate management"
-        echo "    ${command_name} help                Show this help"
+        echo "  用法："
+        echo "    ${command_name} ssl [子命令]        SSL 证书管理"
+        echo "    ${command_name} help                查看帮助"
         echo ""
-        echo "  SSL subcommands:"
-        echo "    ${command_name} ssl                 Interactive menu"
-        echo "    ${command_name} ssl <domain>        Apply certificate for domain"
-        echo "    ${command_name} ssl list            List certificates"
-        echo "    ${command_name} ssl status          Show certificate status"
-        echo "    ${command_name} ssl renew           Renew certificates"
-        echo "    ${command_name} ssl logs            View logs"
-        echo "    ${command_name} ssl help            SSL help"
+        echo "  SSL 子命令："
+        echo "    ${command_name} ssl                 打开交互式菜单"
+        echo "    ${command_name} ssl <域名>          申请或续期证书"
+        echo "    ${command_name} ssl list            查看证书列表"
+        echo "    ${command_name} ssl status          查看证书状态"
+        echo "    ${command_name} ssl renew           续期证书"
+        echo "    ${command_name} ssl logs            查看日志"
+        echo "    ${command_name} ssl help            SSL 帮助"
         echo ""
         ;;
     *)
-        echo "Unknown command: $subcmd"
-        echo "Run '${command_name} help' for usage."
+        echo "未知命令：$subcmd"
+        echo "执行 '${command_name} help' 查看用法。"
         exit 1
         ;;
 esac

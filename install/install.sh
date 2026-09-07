@@ -12,7 +12,7 @@ readonly SRC_DIR="${SCRIPT_DIR}/../src"
 
 INSTALL_COMMAND_NAME="${SSL_CERTBOT_BIN:-w}"
 if [[ ! "$INSTALL_COMMAND_NAME" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]]; then
-    echo "[ERROR] SSL_CERTBOT_BIN must be a command name containing letters, numbers, _ or -." >&2
+    echo "[错误] SSL_CERTBOT_BIN 必须是只包含字母、数字、_ 或 - 的命令名。" >&2
     exit 1
 fi
 INSTALL_COMMAND_BIN="/usr/local/bin/${INSTALL_COMMAND_NAME}"
@@ -26,19 +26,19 @@ else
     C_CYAN=''; C_BOLD=''; C_RESET=''
 fi
 
-info()  { echo "${C_GREEN}[INFO]${C_RESET} $*"; }
-warn()  { echo "${C_YELLOW}[WARN]${C_RESET} $*" >&2; }
-error() { echo "${C_RED}${C_BOLD}[ERROR]${C_RESET} $*" >&2; }
+info()  { echo "${C_GREEN}[信息]${C_RESET} $*"; }
+warn()  { echo "${C_YELLOW}[警告]${C_RESET} $*" >&2; }
+error() { echo "${C_RED}${C_BOLD}[错误]${C_RESET} $*" >&2; }
 die()   { error "$@"; exit 1; }
 
 # ── Root check ──────────────────────────────────────────────────────
 if [[ "$(id -u)" -ne 0 ]]; then
-    die "This installer must be run as root."
+    die "必须以 root 权限运行安装器。"
 fi
 
 # ── OS detection ────────────────────────────────────────────────────
 if [[ ! -f /etc/os-release ]]; then
-    die "Cannot detect OS: /etc/os-release not found."
+    die "无法识别操作系统：未找到 /etc/os-release。"
 fi
 # shellcheck disable=SC1091
 . /etc/os-release
@@ -46,15 +46,15 @@ fi
 case "${ID:-}" in
     debian|ubuntu) PKG="apt" ;;
     alpine)        PKG="apk" ;;
-    *) die "Unsupported OS: ${ID:-unknown}. This tool supports Debian, Ubuntu, and Alpine Linux." ;;
+    *) die "不支持的操作系统：${ID:-unknown}。仅支持 Debian、Ubuntu 和 Alpine Linux。" ;;
 esac
 
-info "Detected OS: ${ID} ${VERSION_ID:-} (package manager: ${PKG})"
+info "识别到系统：${ID} ${VERSION_ID:-}（包管理器：${PKG}）"
 
 # ── Source files check ──────────────────────────────────────────────
 for f in common.sh port_service.sh cert.sh cron.sh ssl-certbot.sh w-entry.sh renew-all.sh; do
     if [[ ! -f "${SRC_DIR}/${f}" ]]; then
-        die "Missing source file: ${SRC_DIR}/${f}"
+        die "缺少源文件：${SRC_DIR}/${f}"
     fi
 done
 
@@ -68,10 +68,10 @@ pkg_installed() {
 
 pkg_install() {
     if pkg_installed "$1"; then
-        info "Already installed: $1"
+        info "依赖已安装：$1"
         return 0
     fi
-    info "Installing: $1"
+    info "正在安装：$1"
     case "$PKG" in
         apt) apt-get update -qq && apt-get install -y -qq "$1" ;;
         apk) apk add --no-cache "$1" ;;
@@ -101,7 +101,7 @@ if ! command -v flock >/dev/null 2>&1; then
 fi
 
 # ── Install library files ──────────────────────────────────────────
-info "Installing ssl-certbot to ${INSTALL_LIB_DIR}..."
+info "正在将 ssl-certbot 安装到 ${INSTALL_LIB_DIR}..."
 mkdir -p "$INSTALL_LIB_DIR"
 
 for f in common.sh port_service.sh cert.sh cron.sh ssl-certbot.sh renew-all.sh; do
@@ -114,27 +114,27 @@ install_w_command() {
     if [[ -f "$INSTALL_COMMAND_BIN" ]]; then
         # Check if it belongs to this project
         if grep -qF "$PROJECT_TAG" "$INSTALL_COMMAND_BIN" 2>/dev/null; then
-            info "Updating existing ${INSTALL_COMMAND_NAME} command (belongs to $PROJECT_TAG)."
+            info "正在更新已有的 ${INSTALL_COMMAND_NAME} 命令（属于 $PROJECT_TAG）。"
         else
             warn ""
-            warn "  ${INSTALL_COMMAND_BIN} already exists and belongs to another program."
-            warn "  File content preview:"
+            warn "  ${INSTALL_COMMAND_BIN} 已存在，且属于其他程序。"
+            warn "  文件内容预览："
             head -5 "$INSTALL_COMMAND_BIN" 2>/dev/null | sed 's/^/    /' >&2
             warn ""
-            read -rp "  Overwrite ${INSTALL_COMMAND_BIN}? [y/N]: " confirm
+            read -rp "  覆盖 ${INSTALL_COMMAND_BIN} 吗？[y/N]：" confirm
             if [[ ! "$confirm" =~ ^[yY]$ ]]; then
                 if [[ "$INSTALL_COMMAND_NAME" == "w" ]]; then
                     INSTALL_COMMAND_NAME="sslcert"
                     INSTALL_COMMAND_BIN="/usr/local/bin/${INSTALL_COMMAND_NAME}"
-                    warn "Installing fallback command: ${INSTALL_COMMAND_BIN}"
+                    warn "正在安装备用命令：${INSTALL_COMMAND_BIN}"
                     if [[ -f "$INSTALL_COMMAND_BIN" ]] && ! grep -qF "$PROJECT_TAG" "$INSTALL_COMMAND_BIN" 2>/dev/null; then
-                        warn "${INSTALL_COMMAND_BIN} is also occupied; skipping command installation."
-                        warn "You can still run: /usr/local/lib/ssl-certbot/ssl-certbot.sh"
+                        warn "${INSTALL_COMMAND_BIN} 也已被占用，跳过命令安装。"
+                        warn "仍可执行：/usr/local/lib/ssl-certbot/ssl-certbot.sh"
                         return 0
                     fi
                 else
-                    warn "Skipping ${INSTALL_COMMAND_NAME} command installation."
-                    warn "You can still run: /usr/local/lib/ssl-certbot/ssl-certbot.sh"
+                    warn "跳过 ${INSTALL_COMMAND_NAME} 命令安装。"
+                    warn "仍可执行：/usr/local/lib/ssl-certbot/ssl-certbot.sh"
                     return 0
                 fi
             fi
@@ -148,72 +148,71 @@ install_w_command() {
         sed -i '' "2a\\
 # $PROJECT_TAG" "$INSTALL_COMMAND_BIN" 2>/dev/null || true
     chmod 755 "$INSTALL_COMMAND_BIN"
-    info "Installed: $INSTALL_COMMAND_BIN"
+    info "已安装：$INSTALL_COMMAND_BIN"
 }
 
 install_w_command
 
 # ── Verify installation ────────────────────────────────────────────
-info "Verifying installation..."
+info "正在验证安装..."
 
 verify_ok=1
 
 if [[ ! -x "${INSTALL_LIB_DIR}/ssl-certbot.sh" ]]; then
-    error "ssl-certbot.sh not executable."
+    error "ssl-certbot.sh 不可执行。"
     verify_ok=0
 fi
 
 if [[ -x "$INSTALL_COMMAND_BIN" ]]; then
-    info "${INSTALL_COMMAND_NAME} command: OK"
+    info "${INSTALL_COMMAND_NAME} 命令：正常"
 else
-    warn "${INSTALL_COMMAND_NAME} command not installed (may be skipped due to conflict)."
+    warn "${INSTALL_COMMAND_NAME} 命令未安装（可能因冲突而跳过）。"
 fi
 
 for cmd in bash curl openssl socat; do
     if command -v "$cmd" >/dev/null 2>&1; then
-        info "$cmd: OK"
+        info "$cmd：正常"
     else
-        error "$cmd: NOT FOUND"
+        error "$cmd：未找到"
         verify_ok=0
     fi
 done
 
 if command -v ss >/dev/null 2>&1 || command -v netstat >/dev/null 2>&1 || command -v lsof >/dev/null 2>&1; then
-    info "Port detection tool: OK"
+    info "端口检测工具：正常"
 else
-    error "No port detection tool available."
+    error "没有可用的端口检测工具。"
     verify_ok=0
 fi
 
 if command -v flock >/dev/null 2>&1; then
-    info "flock: OK"
+    info "flock：正常"
 else
-    warn "flock not available; directory-based locking will be used."
+    warn "flock 不可用，将使用基于目录的锁。"
 fi
 
 if [[ "$verify_ok" -eq 0 ]]; then
-    die "Installation verification failed. Please check errors above."
+    die "安装验证失败，请检查上方错误。"
 fi
 
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
-echo "${C_GREEN}${C_BOLD}Installation complete!${C_RESET}"
+echo "${C_GREEN}${C_BOLD}安装完成！${C_RESET}"
 echo "────────────────────────────────────────"
 echo ""
-echo "  Usage:"
-echo "    ${INSTALL_COMMAND_NAME} ssl                 Interactive SSL menu"
-echo "    ${INSTALL_COMMAND_NAME} ssl example.com     Apply certificate for a domain"
-echo "    ${INSTALL_COMMAND_NAME} ssl list            List managed certificates"
-echo "    ${INSTALL_COMMAND_NAME} ssl status          Show certificate status"
-echo "    ${INSTALL_COMMAND_NAME} ssl renew           Renew certificates"
-echo "    ${INSTALL_COMMAND_NAME} ssl help            Show help"
+echo "  用法："
+echo "    ${INSTALL_COMMAND_NAME} ssl                 打开 SSL 交互式菜单"
+echo "    ${INSTALL_COMMAND_NAME} ssl example.com     为域名申请证书"
+echo "    ${INSTALL_COMMAND_NAME} ssl list            查看已管理的证书"
+echo "    ${INSTALL_COMMAND_NAME} ssl status          查看证书状态"
+echo "    ${INSTALL_COMMAND_NAME} ssl renew           续期证书"
+echo "    ${INSTALL_COMMAND_NAME} ssl help            查看帮助"
 echo ""
-echo "  Library: ${INSTALL_LIB_DIR}"
+echo "  程序目录：${INSTALL_LIB_DIR}"
 if [[ -x "$INSTALL_COMMAND_BIN" ]]; then
-echo "  Command: ${INSTALL_COMMAND_BIN}"
+echo "  命令：${INSTALL_COMMAND_BIN}"
 fi
 echo ""
-echo "  ${C_YELLOW}Note:${C_RESET} acme.sh will be installed automatically on first use"
-echo "  if not already present."
-echo "  Certificate changes do not automatically reload your web/proxy service."
+echo "  ${C_YELLOW}提示：${C_RESET} 若 acme.sh 尚未安装，将在首次使用时自动安装。"
+echo "  证书变更不会自动重载 Web 或代理服务。"
 echo ""

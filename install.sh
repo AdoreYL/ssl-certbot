@@ -9,12 +9,12 @@ readonly BRANCH="main"
 readonly ARCHIVE_URL="https://github.com/${REPOSITORY}/archive/refs/heads/${BRANCH}.tar.gz"
 
 if [[ "$(id -u)" -ne 0 ]]; then
-    echo "[ERROR] This installer must be run as root." >&2
+    echo "[错误] 必须以 root 权限运行安装器。" >&2
     exit 1
 fi
 
 if [[ ! -f /etc/os-release ]]; then
-    echo "[ERROR] Cannot detect OS: /etc/os-release not found." >&2
+    echo "[错误] 无法识别操作系统：未找到 /etc/os-release。" >&2
     exit 1
 fi
 . /etc/os-release
@@ -23,7 +23,7 @@ case "${ID:-}" in
     debian|ubuntu) package_manager="apt" ;;
     alpine) package_manager="apk" ;;
     *)
-        echo "[ERROR] Unsupported OS: ${ID:-unknown}. Debian, Ubuntu, and Alpine are supported." >&2
+        echo "[错误] 不支持的操作系统：${ID:-unknown}。仅支持 Debian、Ubuntu 和 Alpine。" >&2
         exit 1
         ;;
 esac
@@ -33,7 +33,7 @@ ensure_bootstrap_dependency() {
     local package="$2"
     command -v "$command" >/dev/null 2>&1 && return 0
 
-    echo "[INFO] Installing bootstrap dependency: $package"
+    echo "[信息] 正在安装引导依赖：$package"
     case "$package_manager" in
         apt)
             apt-get update -qq
@@ -53,13 +53,13 @@ cleanup() {
 trap cleanup EXIT INT TERM HUP
 
 archive_path="$temp_dir/ssl-certbot.tar.gz"
-echo "[INFO] Downloading ssl-certbot from ${REPOSITORY}/${BRANCH}..."
+echo "[信息] 正在从 ${REPOSITORY}/${BRANCH} 下载 ssl-certbot..."
 curl -fsSL "$ARCHIVE_URL" -o "$archive_path"
 tar -xzf "$archive_path" -C "$temp_dir"
 
 project_dir="$temp_dir/ssl-certbot-${BRANCH}"
 if [[ ! -f "$project_dir/install/install.sh" ]]; then
-    echo "[ERROR] Downloaded archive does not contain install/install.sh." >&2
+    echo "[错误] 下载的压缩包中未包含 install/install.sh。" >&2
     exit 1
 fi
 

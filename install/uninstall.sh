@@ -15,47 +15,47 @@ else
     C_BOLD=''; C_RESET=''
 fi
 
-info()  { echo "${C_GREEN}[INFO]${C_RESET} $*"; }
-warn()  { echo "${C_YELLOW}[WARN]${C_RESET} $*" >&2; }
-error() { echo "${C_RED}${C_BOLD}[ERROR]${C_RESET} $*" >&2; }
+info()  { echo "${C_GREEN}[信息]${C_RESET} $*"; }
+warn()  { echo "${C_YELLOW}[警告]${C_RESET} $*" >&2; }
+error() { echo "${C_RED}${C_BOLD}[错误]${C_RESET} $*" >&2; }
 die()   { error "$@"; exit 1; }
 
 if [[ "$(id -u)" -ne 0 ]]; then
-    die "This uninstaller must be run as root."
+    die "必须以 root 权限运行卸载器。"
 fi
 
 echo ""
-echo "${C_BOLD}ssl-certbot Uninstaller${C_RESET}"
+echo "${C_BOLD}ssl-certbot 卸载器${C_RESET}"
 echo "────────────────────────────────────────"
 echo ""
-echo "This will remove:"
+echo "将删除："
 echo "  - ${INSTALL_LIB_DIR}"
-echo "  - Any tagged ssl-certbot command in /usr/local/bin/ (if present)"
-echo "  - Auto-renewal cron job"
+echo "  - /usr/local/bin/ 中带 ssl-certbot 标记的命令（若存在）"
+echo "  - 自动续期 cron 任务"
 echo ""
-echo "This will NOT remove:"
-echo "  - Existing certificates in /root/cert/"
-echo "  - acme.sh installation in /root/.acme.sh/"
-echo "  - Log files"
+echo "不会删除："
+echo "  - /root/cert/ 中已有的证书"
+echo "  - /root/.acme.sh/ 中的 acme.sh 安装"
+echo "  - 日志文件"
 echo ""
-read -rp "Proceed? [y/N]: " confirm
+read -rp "继续吗？[y/N]：" confirm
 if [[ ! "$confirm" =~ ^[yY]$ ]]; then
-    echo "Aborted."
+    echo "已取消。"
     exit 0
 fi
 
 # Remove cron job
 if crontab -l 2>/dev/null | grep -qF "$SSL_CRON_MARKER"; then
-    info "Removing auto-renewal cron job..."
+    info "正在删除自动续期 cron 任务..."
     crontab -l 2>/dev/null | grep -vF "$SSL_CRON_MARKER" | crontab -
-    info "Cron job removed."
+    info "cron 任务已删除。"
 fi
 
 # Remove library
 if [[ -d "$INSTALL_LIB_DIR" ]]; then
-    info "Removing ${INSTALL_LIB_DIR}..."
+    info "正在删除 ${INSTALL_LIB_DIR}..."
     rm -rf "$INSTALL_LIB_DIR"
-    info "Library removed."
+    info "程序目录已删除。"
 fi
 
 # Remove any tagged commands without touching other tools. This also covers
@@ -63,7 +63,7 @@ fi
 for command_bin in /usr/local/bin/*; do
     [[ -f "$command_bin" ]] || continue
     if grep -qF "$PROJECT_TAG" "$command_bin" 2>/dev/null; then
-        info "Removing ${command_bin}..."
+        info "正在删除 ${command_bin}..."
         rm -f "$command_bin"
     fi
 done
@@ -73,9 +73,9 @@ rm -rf /run/ssl-certbot 2>/dev/null || true
 rm -f /run/ssl-certbot.lock 2>/dev/null || true
 
 echo ""
-echo "${C_GREEN}${C_BOLD}Uninstallation complete.${C_RESET}"
+echo "${C_GREEN}${C_BOLD}卸载完成。${C_RESET}"
 echo ""
-echo "  Certificates in /root/cert/ have been preserved."
-echo "  To remove them manually: rm -rf /root/cert/"
-echo "  To remove acme.sh: rm -rf /root/.acme.sh/"
+echo "  已保留 /root/cert/ 中的证书。"
+echo "  如需手动删除证书：rm -rf /root/cert/"
+echo "  如需删除 acme.sh：rm -rf /root/.acme.sh/"
 echo ""

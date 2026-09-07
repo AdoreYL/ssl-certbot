@@ -19,7 +19,7 @@ source "${LIB_DIR}/cert.sh"
 
 # ── Trap for cleanup ───────────────────────────────────────────────
 _renew_cleanup() {
-    ssl_log INFO "Renewal cleanup triggered..."
+    ssl_log INFO "正在清理自动续期流程..."
     ssl_restore_services
     ssl_release_lock
 }
@@ -28,18 +28,18 @@ trap _renew_cleanup EXIT INT TERM HUP
 # ── Main ────────────────────────────────────────────────────────────
 main() {
     ssl_init_log
-    ssl_log INFO "=== Auto-renewal started ==="
+    ssl_log INFO "=== 自动续期开始 ==="
     ssl_detect_os
 
     # Acquire lock
     ssl_acquire_lock
 
     if ssl_renew_managed_certificates; then
-        ssl_log INFO "=== Auto-renewal finished successfully ==="
+        ssl_log INFO "=== 自动续期成功结束 ==="
         exit 0
     fi
 
-    ssl_log ERROR "=== Auto-renewal finished with failures ==="
+    ssl_log ERROR "=== 自动续期结束，存在失败项 ==="
     exit 1
 }
 

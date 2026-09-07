@@ -49,9 +49,9 @@ ssl_log() {
         echo "$msg" >> "$_ssl_log_file"
     fi
     case "$level" in
-        ERROR)   echo "${C_RED}${C_BOLD}[ERROR]${C_RESET} $*" >&2 ;;
-        WARN)    echo "${C_YELLOW}[WARN]${C_RESET} $*" >&2 ;;
-        INFO)    echo "${C_GREEN}[INFO]${C_RESET} $*" ;;
+        ERROR)   echo "${C_RED}${C_BOLD}[错误]${C_RESET} $*" >&2 ;;
+        WARN)    echo "${C_YELLOW}[警告]${C_RESET} $*" >&2 ;;
+        INFO)    echo "${C_GREEN}[信息]${C_RESET} $*" ;;
         DEBUG)   ;; # silent unless VERBOSE
     esac
 }
@@ -64,7 +64,7 @@ ssl_die() {
 # ── Root check ──────────────────────────────────────────────────────
 ssl_require_root() {
     if [[ "$(id -u)" -ne 0 ]]; then
-        ssl_die "This tool must be run as root."
+        ssl_die "必须以 root 权限运行此工具。"
     fi
 }
 
@@ -76,7 +76,7 @@ SSL_PKG=""       # apt | apk
 
 ssl_detect_os() {
     if [[ ! -f /etc/os-release ]]; then
-        ssl_die "Cannot detect OS: /etc/os-release not found."
+        ssl_die "无法识别操作系统：未找到 /etc/os-release。"
     fi
     # shellcheck disable=SC1091
     . /etc/os-release
@@ -98,7 +98,7 @@ ssl_detect_os() {
             SSL_PKG="apk"
             ;;
         *)
-            ssl_die "Unsupported operating system: ${ID:-unknown}. This tool supports Debian, Ubuntu, and Alpine Linux only."
+            ssl_die "不支持的操作系统：${ID:-unknown}。仅支持 Debian、Ubuntu 和 Alpine Linux。"
             ;;
     esac
 
@@ -111,7 +111,7 @@ ssl_detect_os() {
         SSL_INIT="unknown"
     fi
 
-    ssl_log INFO "Detected OS: $SSL_OS $SSL_OS_VER  Init: $SSL_INIT  Pkg: $SSL_PKG"
+    ssl_log INFO "识别到系统：$SSL_OS $SSL_OS_VER，初始化系统：$SSL_INIT，包管理器：$SSL_PKG"
 }
 
 # ── Package helpers ─────────────────────────────────────────────────
@@ -126,10 +126,10 @@ ssl_pkg_installed() {
 ssl_pkg_install() {
     local pkg="$1"
     if ssl_pkg_installed "$pkg"; then
-        ssl_log INFO "Package already installed: $pkg"
+        ssl_log INFO "依赖已安装：$pkg"
         return 0
     fi
-    ssl_log INFO "Installing package: $pkg"
+    ssl_log INFO "正在安装依赖：$pkg"
     case "$SSL_PKG" in
         apt) apt-get update -qq && apt-get install -y -qq "$pkg" ;;
         apk) apk add --no-cache "$pkg" ;;
@@ -154,13 +154,13 @@ ssl_ensure_deps() {
     if ! command -v ss >/dev/null 2>&1 \
        && ! command -v netstat >/dev/null 2>&1 \
        && ! command -v lsof >/dev/null 2>&1; then
-        ssl_log WARN "No port detection tool found, installing iproute2/net-tools..."
+        ssl_log WARN "未找到端口检测工具，正在安装 iproute2/net-tools..."
         case "$SSL_PKG" in
             apt) ssl_pkg_install iproute2 ;;
             apk) ssl_pkg_install iproute2 ;;
         esac
         if ! command -v ss >/dev/null 2>&1; then
-            ssl_die "Cannot install a port detection tool (ss/netstat/lsof). Please install one manually."
+            ssl_die "无法安装端口检测工具（ss/netstat/lsof），请手动安装。"
         fi
     fi
 
@@ -172,16 +172,16 @@ ssl_ensure_deps() {
         esac
     fi
 
-    ssl_log INFO "All dependencies satisfied."
+    ssl_log INFO "所有依赖均已满足。"
 }
 
 # ── acme.sh install ────────────────────────────────────────────────
 ssl_ensure_acme() {
     if [[ -f "$SSL_ACME_HOME/acme.sh" ]]; then
-        ssl_log INFO "acme.sh already installed at $SSL_ACME_HOME"
+        ssl_log INFO "acme.sh 已安装：$SSL_ACME_HOME"
         return 0
     fi
-    ssl_log INFO "Installing acme.sh..."
+    ssl_log INFO "正在安装 acme.sh..."
     curl -fsSL https://get.acme.sh | sh -s -- \
         --install-online \
         --home "$SSL_ACME_HOME" \
@@ -189,11 +189,11 @@ ssl_ensure_acme() {
         --no-profile \
         --accountemail "ssl-certbot@localhost"
     if [[ ! -f "$SSL_ACME_HOME/acme.sh" ]]; then
-        ssl_die "acme.sh installation failed."
+        ssl_die "acme.sh 安装失败。"
     fi
     # Default CA = Let's Encrypt
     "$SSL_ACME_HOME/acme.sh" --set-default-ca --server letsencrypt 2>/dev/null || true
-    ssl_log INFO "acme.sh installed successfully."
+    ssl_log INFO "acme.sh 安装完成。"
 }
 
 # ── Domain validation ──────────────────────────────────────────────
@@ -202,43 +202,43 @@ ssl_validate_domain() {
 
     # No leading/trailing whitespace
     if [[ "$domain" != "$(echo "$domain" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" ]]; then
-        ssl_log ERROR "Domain must not have leading or trailing whitespace."
+        ssl_log ERROR "域名前后不能包含空白字符。"
         return 1
     fi
 
     # No internal whitespace
     if [[ "$domain" =~ [[:space:]] ]]; then
-        ssl_log ERROR "Domain must not contain whitespace."
+        ssl_log ERROR "域名不能包含空白字符。"
         return 1
     fi
 
     # No wildcard
     if [[ "$domain" == *'*'* ]]; then
-        ssl_log ERROR "Wildcard domains are not supported."
+        ssl_log ERROR "暂不支持通配符域名。"
         return 1
     fi
 
     # No URL schemes
     if [[ "$domain" =~ ^https?:// ]]; then
-        ssl_log ERROR "Please enter a domain name, not a URL (remove https:// or http://)."
+        ssl_log ERROR "请输入域名，不要输入 URL（请去掉 https:// 或 http://）。"
         return 1
     fi
 
     # No path
     if [[ "$domain" == */* ]]; then
-        ssl_log ERROR "Domain must not contain a path."
+        ssl_log ERROR "域名不能包含路径。"
         return 1
     fi
 
     # No port
     if [[ "$domain" == *:* ]]; then
-        ssl_log ERROR "Domain must not contain a port number."
+        ssl_log ERROR "域名不能包含端口号。"
         return 1
     fi
 
     # No IP addresses
     if [[ "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        ssl_log ERROR "IP address certificates are not supported. Please use a domain name."
+        ssl_log ERROR "不支持申请 IP 地址证书，请使用域名。"
         return 1
     fi
 
@@ -247,17 +247,17 @@ ssl_validate_domain() {
     IFS='.'
     for label in $domain; do
         if [[ -z "$label" ]]; then
-            ssl_log ERROR "Domain contains an empty label (consecutive dots)."
+            ssl_log ERROR "域名包含空标签（连续的点）。"
             IFS="$IFS_SAVE"
             return 1
         fi
         if [[ ${#label} -gt 63 ]]; then
-            ssl_log ERROR "Domain label '$label' exceeds 63 characters."
+            ssl_log ERROR "域名标签 '$label' 超过 63 个字符。"
             IFS="$IFS_SAVE"
             return 1
         fi
         if ! [[ "$label" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]]; then
-            ssl_log ERROR "Invalid domain label: '$label'. Labels must start and end with a letter or digit and contain only letters, digits, and hyphens."
+            ssl_log ERROR "无效的域名标签：'$label'。标签必须以字母或数字开头和结尾，且只能包含字母、数字和连字符。"
             IFS="$IFS_SAVE"
             return 1
         fi
@@ -268,13 +268,13 @@ ssl_validate_domain() {
     local dot_count
     dot_count=$(echo "$domain" | tr -cd '.' | wc -c)
     if [[ "$dot_count" -lt 1 ]]; then
-        ssl_log ERROR "Domain must have at least two labels (e.g. example.com)."
+        ssl_log ERROR "域名至少需要两级，例如 example.com。"
         return 1
     fi
 
     # Total length
     if [[ ${#domain} -gt 253 ]]; then
-        ssl_log ERROR "Domain name exceeds 253 characters."
+        ssl_log ERROR "域名长度超过 253 个字符。"
         return 1
     fi
 
@@ -289,9 +289,9 @@ ssl_acquire_lock() {
     exec 9>"$SSL_LOCK_FILE"
     SSL_LOCK_FD=9
     if ! flock -n 9; then
-        ssl_die "Another ssl-certbot process is running. If this is incorrect, remove $SSL_LOCK_FILE and retry."
+        ssl_die "已有 ssl-certbot 进程正在运行。如确认不是，请删除 $SSL_LOCK_FILE 后重试。"
     fi
-    ssl_log INFO "Lock acquired."
+    ssl_log INFO "已获取进程锁。"
 }
 
 ssl_release_lock() {
