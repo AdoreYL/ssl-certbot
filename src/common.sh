@@ -180,13 +180,11 @@ ssl_ensure_deps() {
 
 # ── acme.sh install ────────────────────────────────────────────────
 ssl_clear_acme_account_email() {
-    local account_conf="${SSL_ACME_HOME}/account.conf"
-    local ca_conf="${SSL_ACME_HOME}/ca/acme-v02.api.letsencrypt.org/directory/account.conf"
+    local account_conf
 
-    for account_conf in "$account_conf" "$ca_conf"; do
-        [[ -f "$account_conf" ]] || continue
+    while IFS= read -r -d '' account_conf; do
         sed -i '/^ACCOUNT_EMAIL=.*ssl-certbot@localhost/d;/^CA_EMAIL=.*ssl-certbot@localhost/d' "$account_conf"
-    done
+    done < <(find "$SSL_ACME_HOME" -type f -name "*.conf" -print0)
 }
 
 ssl_ensure_acme() {

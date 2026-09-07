@@ -431,6 +431,15 @@ test_acme_setup_does_not_require_an_email_address() {
     assert_not_contains "$common" "register-account -m" "注册命令不再使用邮箱"
 }
 
+test_acme_email_cleanup_covers_account_and_ca_configs() {
+    local common
+    common=$(<"$PROJECT_ROOT/src/common.sh")
+
+    assert_contains "$common" 'find "$SSL_ACME_HOME" -type f -name "*.conf"' "会扫描 acme.sh 的所有账户与 CA 配置文件"
+    assert_contains "$common" "ACCOUNT_EMAIL" "会清除遗留账户邮箱"
+    assert_contains "$common" "CA_EMAIL" "会清除遗留 CA 邮箱"
+}
+
 test_ssl_menu_includes_update_and_uninstall_actions() {
     local ssl_script
     ssl_script=$(<"$PROJECT_ROOT/src/ssl-certbot.sh")
@@ -459,6 +468,7 @@ test_entry_supports_uninstall_command
 test_acme_installer_does_not_use_removed_install_online_option
 test_acme_bootstrap_does_not_receive_account_options
 test_acme_setup_does_not_require_an_email_address
+test_acme_email_cleanup_covers_account_and_ca_configs
 test_ssl_menu_includes_update_and_uninstall_actions
 
 if [[ "$fail_count" -ne 0 ]]; then
