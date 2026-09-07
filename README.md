@@ -11,9 +11,19 @@
 ## 快速上手
 
 ```bash
-# 一键远程安装（推荐）
+# Debian / Ubuntu 一键远程安装（推荐）
 bash <(curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh)
+```
 
+Alpine Linux 最小系统默认不含 `bash` 和 `curl`，需先安装前置依赖：
+
+```bash
+# Alpine Linux 首次安装
+apk add --no-cache bash curl tar
+bash <(curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh)
+```
+
+```bash
 # 安装后，直接为域名申请证书
 w ssl example.com
 

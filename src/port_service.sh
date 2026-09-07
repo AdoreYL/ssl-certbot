@@ -222,7 +222,11 @@ ssl_pause_port_services() {
                     if grep -q "^service:${svc_name}:" "$SSL_PAUSED_FILE" 2>/dev/null; then
                         continue
                     fi
-                    ssl_stop_service "$svc_name"
+                    if ! ssl_stop_service "$svc_name"; then
+                        ssl_log ERROR "Failed to stop service: $svc_name"
+                        ssl_restore_services
+                        return 1
+                    fi
                     ssl_record_paused "service:${svc_name}:${port}:stop:start"
                     ;;
                 docker-proxy)
@@ -240,7 +244,11 @@ ssl_pause_port_services() {
             if grep -q "^docker:${cid}:" "$SSL_PAUSED_FILE" 2>/dev/null; then
                 continue
             fi
-            ssl_stop_docker_container "$cid"
+            if ! ssl_stop_docker_container "$cid"; then
+                ssl_log ERROR "Failed to stop Docker container: $cname ($cid)"
+                ssl_restore_services
+                return 1
+            fi
             ssl_record_paused "docker:${cid}:${cname}:${cport}"
         done <<< "$docker_containers"
     fi

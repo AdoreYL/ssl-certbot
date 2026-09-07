@@ -130,12 +130,17 @@ ssl_cmd_apply() {
     # Set up auto-renewal
     echo ""
     echo "${C_BOLD}Configuring auto-renewal...${C_RESET}"
-    ssl_install_cron_job
+    local cron_result=0
+    ssl_install_cron_job || cron_result=$?
 
     # Final summary
     local cert_dir="${SSL_CERT_BASE}/${domain}"
     echo ""
-    echo "${C_GREEN}${C_BOLD}Certificate successfully issued!${C_RESET}"
+    if [[ "$cron_result" -ne 0 ]]; then
+        echo "${C_YELLOW}${C_BOLD}Certificate issued, but auto-renewal setup failed.${C_RESET}"
+    else
+        echo "${C_GREEN}${C_BOLD}Certificate successfully issued!${C_RESET}"
+    fi
     echo "────────────────────────────────────────"
     echo "  Domain:      $domain"
     echo "  Certificate: ${cert_dir}/fullchain.pem"
@@ -144,9 +149,19 @@ ssl_cmd_apply() {
     echo "  ${C_YELLOW}Note:${C_RESET} Services paused during issuance have been restored."
     echo "  This tool does not reload or restart services automatically."
     echo "  Configure your service to use the paths above, then reload it yourself."
+    if [[ "$cron_result" -ne 0 ]]; then
+        echo ""
+        echo "  ${C_RED}Warning:${C_RESET} Automatic renewal could not be configured."
+        echo "  Run '${0##*/} ssl renew' manually before the certificate expires,"
+        echo "  or check cron status and retry installation."
+    fi
     echo ""
 
-    ssl_log INFO "Certificate process completed for $domain"
+    if [[ "$cron_result" -ne 0 ]]; then
+        ssl_log WARN "Certificate issued for $domain but cron setup failed."
+        return 1
+    fi
+    ssl_log INFO "Certificate process completed successfully for $domain"
 }
 
 # ── Command: renew ──────────────────────────────────────────────────
