@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
 # ssl-certbot cron / auto-renewal management
 
-# ── Cron detection ──────────────────────────────────────────────────
-ssl_detect_cron() {
+# ── Cron health checks ──────────────────────────────────────────────
+ssl_cron_command_available() {
     if ! command -v crontab >/dev/null 2>&1; then
         ssl_log WARN "crontab command not found."
         return 1
     fi
+    return 0
+}
 
-    # Check cron daemon is installed and running
+ssl_cron_daemon_available() {
+    if [[ "$SSL_INIT" == "systemd" ]]; then
+        systemctl list-unit-files cron.service crond.service 2>/dev/null | grep -qE '^(cron|crond)\.service'
+    elif [[ "$SSL_INIT" == "openrc" ]]; then
+        command -v crond >/dev/null 2>&1 && rc-service --list 2>/dev/null | grep -qx "crond"
+    else
+        command -v cron >/dev/null 2>&1 || command -v crond >/dev/null 2>&1
+    fi
+}
+
+ssl_cron_is_running() {
     if [[ "$SSL_INIT" == "systemd" ]]; then
         if systemctl is-active cron.service >/dev/null 2>&1 || \
            systemctl is-active crond.service >/dev/null 2>&1; then
             return 0
         fi
-        # Try to start it
-        if systemctl start cron.service 2>/dev/null || \
-           systemctl start crond.service 2>/dev/null; then
-            ssl_log INFO "Started cron daemon."
-            return 0
-        fi
     elif [[ "$SSL_INIT" == "openrc" ]]; then
         if rc-service crond status >/dev/null 2>&1; then
-            return 0
-        fi
-        if rc-service crond start 2>/dev/null; then
-            ssl_log INFO "Started crond daemon."
             return 0
         fi
     fi
@@ -35,40 +37,60 @@ ssl_detect_cron() {
         return 0
     fi
 
-    ssl_log WARN "Cron daemon does not appear to be running."
     return 1
+}
+
+ssl_cron_boot_enabled() {
+    if [[ "$SSL_INIT" == "systemd" ]]; then
+        systemctl is-enabled cron.service >/dev/null 2>&1 || \
+        systemctl is-enabled crond.service >/dev/null 2>&1
+    elif [[ "$SSL_INIT" == "openrc" ]]; then
+        rc-update show default 2>/dev/null | awk '{print $1}' | grep -qx "crond"
+    else
+        return 1
+    fi
+}
+
+ssl_cron_job_installed() {
+    ssl_cron_command_available && crontab -l 2>/dev/null | grep -qF "$SSL_CRON_MARKER"
+}
+
+ssl_start_cron() {
+    if [[ "$SSL_INIT" == "systemd" ]]; then
+        systemctl start cron.service 2>/dev/null || systemctl start crond.service 2>/dev/null
+    elif [[ "$SSL_INIT" == "openrc" ]]; then
+        rc-service crond start 2>/dev/null
+    else
+        return 1
+    fi
 }
 
 # ── Ensure cron is available ────────────────────────────────────────
 ssl_ensure_cron() {
-    if ssl_detect_cron; then
-        return 0
+    if ! ssl_cron_command_available || ! ssl_cron_daemon_available; then
+        ssl_log INFO "Installing cron daemon..."
+        case "$SSL_PKG" in
+            apt) ssl_pkg_install cron ;;
+            apk)
+                ssl_pkg_install busybox-openrc 2>/dev/null || true
+                if ! command -v crond >/dev/null 2>&1; then
+                    ssl_pkg_install dcron
+                fi
+                ;;
+        esac
     fi
 
-    ssl_log INFO "Installing cron..."
-    case "$SSL_PKG" in
-        apt)
-            ssl_pkg_install cron
-            systemctl enable cron.service 2>/dev/null || true
-            systemctl start cron.service 2>/dev/null || true
-            ;;
-        apk)
-            ssl_pkg_install busybox-openrc 2>/dev/null || true
-            # Alpine uses crond from busybox or dcron
-            if ! command -v crond >/dev/null 2>&1; then
-                ssl_pkg_install dcron 2>/dev/null || true
-            fi
-            rc-update add crond default 2>/dev/null || true
-            rc-service crond start 2>/dev/null || true
-            ;;
-    esac
-
-    if ! ssl_detect_cron; then
+    ssl_enable_cron_boot
+    if ! ssl_cron_is_running && ! ssl_start_cron; then
         ssl_log ERROR "Failed to set up cron. Auto-renewal will not be available."
         return 1
     fi
 
-    ssl_log INFO "Cron is now available and running."
+    if ! ssl_cron_boot_enabled; then
+        ssl_log WARN "Cron is running, but automatic startup could not be verified."
+    fi
+
+    ssl_log INFO "Cron is available and running."
     return 0
 }
 
@@ -89,8 +111,7 @@ ssl_install_cron_job() {
         return 1
     fi
 
-    # Check if already installed
-    if crontab -l 2>/dev/null | grep -qF "$SSL_CRON_MARKER"; then
+    if ssl_cron_job_installed; then
         ssl_log INFO "Auto-renewal cron job already installed."
         return 0
     fi
@@ -98,8 +119,8 @@ ssl_install_cron_job() {
     # Determine the renewal script path
     local renew_script="/usr/local/lib/ssl-certbot/renew-all.sh"
 
-    # Build cron entry: run daily at 2:30 AM (with random sleep 0-3600s)
-    local cron_entry="30 2 * * * sleep \$((RANDOM \\% 3600)) && ${renew_script} $SSL_CRON_MARKER"
+    # Cron commonly runs commands with /bin/sh, so use a portable fixed schedule.
+    local cron_entry="30 2 * * * ${renew_script} $SSL_CRON_MARKER"
 
     # Append to crontab
     (crontab -l 2>/dev/null || true; echo "$cron_entry") | crontab -
@@ -119,16 +140,26 @@ ssl_install_cron_job() {
 ssl_cron_status() {
     echo ""
     echo "${C_BOLD}Cron Daemon${C_RESET}"
-    if ssl_detect_cron; then
+    if ssl_cron_command_available; then
+        echo "  Command: ${C_GREEN}Available${C_RESET}"
+    else
+        echo "  Command: ${C_RED}Unavailable${C_RESET}"
+    fi
+    if ssl_cron_is_running; then
         echo "  Status: ${C_GREEN}Running${C_RESET}"
     else
         echo "  Status: ${C_RED}Not running${C_RESET}"
+    fi
+    if ssl_cron_boot_enabled; then
+        echo "  Boot:   ${C_GREEN}Enabled${C_RESET}"
+    else
+        echo "  Boot:   ${C_YELLOW}Not verified${C_RESET}"
     fi
 
     echo ""
     echo "${C_BOLD}Auto-Renewal Job${C_RESET}"
     local job
-    job=$(crontab -l 2>/dev/null | grep "$SSL_CRON_MARKER" || true)
+    job=$(crontab -l 2>/dev/null | grep -F "$SSL_CRON_MARKER" || true)
     if [[ -n "$job" ]]; then
         echo "  Status: ${C_GREEN}Installed${C_RESET}"
         echo "  Entry:  $job"

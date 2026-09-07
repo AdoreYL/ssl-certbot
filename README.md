@@ -11,16 +11,29 @@
 ## 快速上手
 
 ```bash
-# 克隆仓库并安装
-git clone https://github.com/AdoreYL/ssl-certbot.git
-cd ssl-certbot
-bash install/install.sh
+# 一键远程安装（推荐）
+bash <(curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh)
 
-# 直接为域名申请证书
+# 安装后，直接为域名申请证书
 w ssl example.com
 
 # 或调出交互式操作菜单
 w ssl
+```
+
+如需检查安装内容或在离线环境部署，也可以克隆仓库后执行安装器：
+
+```bash
+git clone https://github.com/AdoreYL/ssl-certbot.git
+cd ssl-certbot
+bash install/install.sh
+```
+
+默认快捷命令为 `w`。若 `/usr/local/bin/w` 已被其他程序占用且不选择覆盖，安装器会尝试安装备用命令 `sslcert`；也可以在安装时主动指定命令名：
+
+```bash
+SSL_CERTBOT_BIN=sslcert bash <(curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh)
+sslcert ssl example.com
 ```
 
 ## 常用命令
@@ -29,7 +42,7 @@ w ssl
 |------|------|
 | `w ssl` | 打开交互式管理菜单 |
 | `w ssl <domain>` | 申请或续期指定域名证书 |
-| `w ssl list` | 列出所有已管理的证书及剩余天数 |
+| `w ssl list` | 列出所有已管理的证书及是否进入续期窗口 |
 | `w ssl status` | 查看指定域名的详细证书状态与端口环境 |
 | `w ssl renew` | 批量手动续期所有证书 |
 | `w ssl renew <domain>` | 手动续期指定域名的证书 |
@@ -53,6 +66,7 @@ w ssl
 - **必须开放公网 TCP 80 端口**：HTTP-01 验证依赖 Let's Encrypt CA 服务器直接访问本机的 80 端口。若存在云厂商安全组/防火墙拦截，需提前放行。
 - **TCP 443 端口处理**：443 端口属于安全暂停/恢复范围，但 HTTP-01 验证本身仅占用 80 端口。
 - **零破坏与防误杀安全策略**：若检测到非受管的未知进程占用端口，脚本**绝不会**强行使用 `kill -9` 杀除，而是输出其 PID 和进程名，提示管理员手动处理。
+- **服务加载新证书**：工具会恢复被暂停的服务，但不会自动 reload 或 restart Nginx、Caddy、x-ui、3x-ui。请自行确保服务配置指向下方的证书路径，并在证书更新后按自己的服务配置 reload。
 
 ## 证书保存路径
 
@@ -74,7 +88,9 @@ w ssl
 
 ## 自动续期机制
 
-安装后会自动注册 Cron 定时任务，在每天凌晨 02:30（并附带 0~60 分钟随机抖动防突发流量）执行扫描。当证书剩余有效期不足 30 天时，自动触发续期，复用完全相同的安全端口释放与现场恢复逻辑。
+安装后会自动注册 Cron 定时任务，每天凌晨 02:30 执行扫描。脚本使用 `openssl x509 -checkend` 判断证书是否进入约 30 天的续期窗口，避免依赖 Alpine BusyBox 与 GNU `date` 的参数差异。
+
+只有存在需要续期的证书时，工具才会暂停已识别且实际占用 TCP 80/443 的服务并执行普通 `acme.sh --renew`；没有需要续期的证书时不会暂停服务。任一证书续期、证书读取或服务恢复失败时，自动任务会以非零状态结束并记录日志，原有有效证书不会被删除。
 
 ## 适配服务检测清单
 
@@ -109,6 +125,7 @@ w ssl
 - 仅支持 HTTP-01 验证（暂不提供 DNS-01 API 接入）
 - 仅支持单域名证书（不支持通配符通配证书与多 SAN 域名合并）
 - 不主动侵入修改 Nginx/Caddy/x-ui 等服务的原有配置文件
+- 不自动 reload 或 restart 服务；服务如何加载更新后的证书由管理员自行配置
 - 不支持申请纯 IP 证书与自签名证书
 - 专为 Debian/Ubuntu/Alpine 优化
 
@@ -134,6 +151,7 @@ bash install/uninstall.sh
 
 ```
 ssl-certbot/
+  install.sh             # 可通过 curl 运行的远程安装入口
   src/
     common.sh          # 基础公共函数库、系统识别、依赖校验、锁与日志
     port_service.sh    # 80/443 端口检测与服务识别、安全暂停与现场恢复
@@ -143,7 +161,7 @@ ssl-certbot/
     w-entry.sh         # /usr/local/bin/w 快捷包装脚本
     renew-all.sh       # Cron 定时调用的全量续期脚本
   install/
-    install.sh         # 一键安装脚本
+    install.sh         # 仓库内安装脚本
     uninstall.sh       # 卸载脚本
   docs/
     requirements.md    # 架构与需求设计规范文档

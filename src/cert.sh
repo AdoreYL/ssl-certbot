@@ -24,7 +24,6 @@ ssl_issue_cert() {
         -d "$domain" \
         --server letsencrypt \
         --keylength 2048 \
-        --force \
         --log "$_ssl_log_file" 2>&1
     acme_exit=$?
     set -e
@@ -93,7 +92,6 @@ ssl_renew_cert() {
         -d "$domain" \
         --standalone \
         --server letsencrypt \
-        --force \
         --log "$_ssl_log_file" 2>&1
     acme_exit=$?
     set -e
@@ -124,6 +122,96 @@ ssl_renew_cert() {
     return 0
 }
 
+# Return 0 when the deployed certificate expires within the renewal window,
+# 1 when it remains valid beyond the window, and 2 when it cannot be read.
+ssl_cert_needs_renewal_file() {
+    local fullchain="$1"
+    local renew_window_seconds="${SSL_RENEW_WINDOW_SECONDS:-2592000}"
+
+    if ! openssl x509 -in "$fullchain" -noout >/dev/null 2>&1; then
+        ssl_log ERROR "Cannot read certificate: $fullchain"
+        return 2
+    fi
+
+    if openssl x509 -in "$fullchain" -checkend "$renew_window_seconds" -noout >/dev/null 2>&1; then
+        return 1
+    fi
+
+    return 0
+}
+
+# Renew managed certificates that are within the renewal window. The caller
+# must hold the process lock before invoking this function.
+ssl_renew_managed_certificates() {
+    local -a domains=()
+    local renewed=0
+    local skipped=0
+    local failed=0
+    local cert_dir domain fullchain check_result
+
+    if [[ ! -d "$SSL_CERT_BASE" ]]; then
+        ssl_log INFO "No certificates directory found. Nothing to renew."
+        return 0
+    fi
+
+    for cert_dir in "$SSL_CERT_BASE"/*/; do
+        [[ ! -d "$cert_dir" ]] && continue
+        domain=$(basename "$cert_dir")
+        fullchain="${cert_dir}fullchain.pem"
+        [[ ! -f "$fullchain" ]] && continue
+
+        if ssl_cert_needs_renewal_file "$fullchain"; then
+            domains+=("$domain")
+            continue
+        else
+            check_result=$?
+        fi
+        if [[ "$check_result" -eq 1 ]]; then
+            skipped=$((skipped + 1))
+            ssl_log INFO "$domain: valid for more than 30 days, skipping."
+        else
+            failed=$((failed + 1))
+            ssl_log ERROR "$domain: cannot determine certificate expiry; skipping."
+        fi
+    done
+
+    if [[ ${#domains[@]} -eq 0 ]]; then
+        ssl_log INFO "Renewal summary: renewed=0 skipped=$skipped failed=$failed"
+        if [[ "$failed" -eq 0 ]]; then
+            return 0
+        fi
+        return 1
+    fi
+
+    ssl_log INFO "Certificates requiring renewal: ${domains[*]}"
+    if ! ssl_pause_port_services; then
+        ssl_log ERROR "Cannot free ports for renewal."
+        ssl_log ERROR "Renewal summary: renewed=0 skipped=$skipped failed=${#domains[@]}"
+        return 1
+    fi
+
+    for domain in "${domains[@]}"; do
+        if ssl_renew_cert "$domain"; then
+            renewed=$((renewed + 1))
+            ssl_log INFO "Renewed: $domain"
+        else
+            failed=$((failed + 1))
+            ssl_log ERROR "Failed to renew: $domain"
+        fi
+    done
+
+    if ! ssl_restore_services; then
+        failed=$((failed + 1))
+        ssl_log ERROR "One or more paused services could not be restored."
+    fi
+
+    ssl_log INFO "Renewal summary: renewed=$renewed skipped=$skipped failed=$failed"
+    if [[ "$failed" -eq 0 ]]; then
+        return 0
+    fi
+    return 1
+}
+
 # ── List certificates ──────────────────────────────────────────────
 ssl_list_certs() {
     if [[ ! -d "$SSL_CERT_BASE" ]]; then
@@ -152,34 +240,35 @@ ssl_list_certs() {
         expiry=$(openssl x509 -in "$fullchain" -noout -enddate 2>/dev/null | cut -d= -f2)
         issuer=$(openssl x509 -in "$fullchain" -noout -issuer 2>/dev/null | sed 's/issuer=//')
 
-        # Calculate days remaining
-        if [[ -n "$expiry" ]]; then
-            local exp_epoch now_epoch
-            exp_epoch=$(date -d "$expiry" +%s 2>/dev/null || date -D "%b %d %H:%M:%S %Y %Z" -d "$expiry" +%s 2>/dev/null || echo "0")
-            now_epoch=$(date +%s)
-            if [[ "$exp_epoch" -gt 0 ]]; then
-                days_left=$(( (exp_epoch - now_epoch) / 86400 ))
-            else
-                days_left="?"
-            fi
+        # openssl -checkend is portable across GNU and BusyBox systems.
+        local renewal_state=0
+        if ssl_cert_needs_renewal_file "$fullchain"; then
+            renewal_state=0
         else
-            days_left="?"
+            renewal_state=$?
         fi
 
         local status_color="$C_GREEN"
-        if [[ "$days_left" != "?" ]] && [[ "$days_left" -lt 30 ]]; then
-            status_color="$C_YELLOW"
-        fi
-        if [[ "$days_left" != "?" ]] && [[ "$days_left" -lt 7 ]]; then
-            status_color="$C_RED"
-        fi
+        case "$renewal_state" in
+            0)
+                days_left="within 30 days"
+                status_color="$C_YELLOW"
+                ;;
+            1)
+                days_left="more than 30 days"
+                ;;
+            *)
+                days_left="unknown"
+                status_color="$C_RED"
+                ;;
+        esac
 
         echo ""
         echo "  ${C_BOLD}$domain${C_RESET}"
         echo "    Certificate: $fullchain"
         echo "    Private key: $privkey"
         echo "    Expires:     ${expiry:-unknown}"
-        echo "    Remaining:   ${status_color}${days_left} days${C_RESET}"
+        echo "    Remaining:   ${status_color}${days_left}${C_RESET}"
         echo "    Issuer:      ${issuer:-unknown}"
     done
 
@@ -197,16 +286,7 @@ ssl_cert_status() {
         # Show all
         ssl_list_certs
 
-        # Show cron status
-        echo "${C_BOLD}Auto-Renewal Status${C_RESET}"
-        echo "────────────────────────────────────────"
-        if crontab -l 2>/dev/null | grep -q "$SSL_CRON_MARKER"; then
-            echo "  ${C_GREEN}Active${C_RESET} - cron job installed"
-            crontab -l 2>/dev/null | grep "$SSL_CRON_MARKER" | sed 's/^/  /'
-        else
-            echo "  ${C_YELLOW}Not configured${C_RESET}"
-        fi
-        echo ""
+        ssl_cron_status
         return 0
     fi
 

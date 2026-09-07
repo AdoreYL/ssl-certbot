@@ -104,16 +104,15 @@ ssl_detect_docker_containers() {
         return 0
     fi
 
-    # List running containers with port mappings
-    docker ps --format '{{.ID}} {{.Names}} {{.Ports}}' 2>/dev/null | while read -r cid cname ports; do
-        # Check for host port 80 mapping
-        if echo "$ports" | grep -qE '0\.0\.0\.0:80->|:::80->'; then
-            echo "$cid $cname 80"
-        fi
-        # Check for host port 443 mapping
-        if echo "$ports" | grep -qE '0\.0\.0\.0:443->|:::443->'; then
-            echo "$cid $cname 443"
-        fi
+    # Inspect structured bindings so loopback and specific-IP mappings work.
+    docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null | while read -r cid cname; do
+        [[ -z "$cid" ]] && continue
+        docker inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{.HostIp}} {{.HostPort}}{{"\n"}}{{end}}{{end}}' "$cid" 2>/dev/null | \
+            while read -r host_ip host_port; do
+                case "$host_port" in
+                    80|443) echo "$cid $cname $host_port" ;;
+                esac
+            done
     done
 }
 

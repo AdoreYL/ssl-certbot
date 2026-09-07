@@ -4,7 +4,6 @@
 set -euo pipefail
 
 readonly INSTALL_LIB_DIR="/usr/local/lib/ssl-certbot"
-readonly INSTALL_W_BIN="/usr/local/bin/w"
 readonly PROJECT_TAG="ssl-certbot"
 readonly SSL_CRON_MARKER="# ssl-certbot auto-renew"
 
@@ -31,7 +30,7 @@ echo "────────────────────────�
 echo ""
 echo "This will remove:"
 echo "  - ${INSTALL_LIB_DIR}"
-echo "  - ${INSTALL_W_BIN} (if it belongs to this project)"
+echo "  - Any tagged ssl-certbot command in /usr/local/bin/ (if present)"
 echo "  - Auto-renewal cron job"
 echo ""
 echo "This will NOT remove:"
@@ -59,16 +58,15 @@ if [[ -d "$INSTALL_LIB_DIR" ]]; then
     info "Library removed."
 fi
 
-# Remove w command (only if ours)
-if [[ -f "$INSTALL_W_BIN" ]]; then
-    if grep -qF "$PROJECT_TAG" "$INSTALL_W_BIN" 2>/dev/null; then
-        info "Removing ${INSTALL_W_BIN}..."
-        rm -f "$INSTALL_W_BIN"
-        info "w command removed."
-    else
-        warn "${INSTALL_W_BIN} does not belong to this project; skipping."
+# Remove any tagged commands without touching other tools. This also covers
+# custom command names supplied through SSL_CERTBOT_BIN at installation time.
+for command_bin in /usr/local/bin/*; do
+    [[ -f "$command_bin" ]] || continue
+    if grep -qF "$PROJECT_TAG" "$command_bin" 2>/dev/null; then
+        info "Removing ${command_bin}..."
+        rm -f "$command_bin"
     fi
-fi
+done
 
 # Clean up runtime state
 rm -rf /run/ssl-certbot 2>/dev/null || true

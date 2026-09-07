@@ -113,11 +113,17 @@ ssl_cmd_apply() {
     # Restore services (always, regardless of result)
     echo ""
     echo "${C_BOLD}Restoring services...${C_RESET}"
-    ssl_restore_services
+    local restore_result=0
+    ssl_restore_services || restore_result=$?
 
     if [[ "$issue_result" -ne 0 ]]; then
         ssl_log ERROR "Certificate issuance failed for $domain"
         ssl_log ERROR "Services have been restored to their original state."
+        return 1
+    fi
+
+    if [[ "$restore_result" -ne 0 ]]; then
+        ssl_log ERROR "Certificate was issued, but one or more services could not be restored."
         return 1
     fi
 
@@ -136,8 +142,8 @@ ssl_cmd_apply() {
     echo "  Private key: ${cert_dir}/privkey.pem"
     echo ""
     echo "  ${C_YELLOW}Note:${C_RESET} Services paused during issuance have been restored."
-    echo "  Please verify that your service configurations point to the"
-    echo "  new certificate paths shown above."
+    echo "  This tool does not reload or restart services automatically."
+    echo "  Configure your service to use the paths above, then reload it yourself."
     echo ""
 
     ssl_log INFO "Certificate process completed for $domain"
@@ -148,31 +154,12 @@ ssl_cmd_renew() {
     local domain="${1:-}"
 
     if [[ -z "$domain" ]]; then
-        # Renew all
         ssl_log INFO "Renewing all certificates..."
         ssl_acquire_lock
-
-        if ! ssl_pause_port_services; then
-            ssl_log ERROR "Cannot free ports for renewal."
-            return 1
+        if ssl_renew_managed_certificates; then
+            return 0
         fi
-
-        local any_renewed=0
-        for cert_dir in "$SSL_CERT_BASE"/*/; do
-            [[ ! -d "$cert_dir" ]] && continue
-            local d
-            d=$(basename "$cert_dir")
-            if ssl_renew_cert "$d"; then
-                any_renewed=1
-            fi
-        done
-
-        ssl_restore_services
-
-        if [[ "$any_renewed" -eq 0 ]]; then
-            echo "No certificates to renew."
-        fi
-        return 0
+        return 1
     fi
 
     # Renew specific domain
@@ -182,6 +169,27 @@ ssl_cmd_renew() {
 
     ssl_acquire_lock
 
+    local fullchain="${SSL_CERT_BASE}/${domain}/fullchain.pem"
+    if [[ ! -f "$fullchain" ]]; then
+        ssl_log ERROR "No certificate found for: $domain"
+        return 1
+    fi
+
+    local renewal_state=0
+    if ssl_cert_needs_renewal_file "$fullchain"; then
+        renewal_state=0
+    else
+        renewal_state=$?
+    fi
+
+    if [[ "$renewal_state" -eq 1 ]]; then
+        ssl_log INFO "$domain: valid for more than 30 days, skipping renewal."
+        return 0
+    elif [[ "$renewal_state" -ne 0 ]]; then
+        ssl_log ERROR "$domain: cannot determine certificate expiry; renewal skipped."
+        return 1
+    fi
+
     if ! ssl_pause_port_services; then
         ssl_log ERROR "Cannot free ports for renewal."
         return 1
@@ -190,17 +198,23 @@ ssl_cmd_renew() {
     local renew_result=0
     ssl_renew_cert "$domain" || renew_result=$?
 
-    ssl_restore_services
+    local restore_result=0
+    ssl_restore_services || restore_result=$?
 
     if [[ "$renew_result" -ne 0 ]]; then
         ssl_log ERROR "Renewal failed for $domain. Services restored."
         return 1
     fi
 
+    if [[ "$restore_result" -ne 0 ]]; then
+        ssl_log ERROR "Certificate renewed, but one or more services could not be restored."
+        return 1
+    fi
+
     echo ""
     echo "${C_GREEN}Certificate renewed for $domain${C_RESET}"
     echo "  Services have been restored to their original state."
-    echo "  Please confirm that your services have loaded the new certificate."
+    echo "  Services are not reloaded automatically; reload them to use the new certificate."
     echo ""
 }
 
@@ -254,6 +268,7 @@ ssl_cmd_help() {
     echo "    - TCP 80 is required for HTTP-01 validation"
     echo "    - TCP 443 is in the pause/restore scope but not required for validation"
     echo "    - Unknown processes on 80/443 will NOT be killed"
+    echo "    - Services are not reloaded automatically after certificate changes"
     echo "    - No Docker, Certbot, or heavy runtimes required"
     echo "    - Powered by acme.sh + Let's Encrypt"
     echo ""

@@ -6,10 +6,16 @@ set -euo pipefail
 umask 077
 
 readonly INSTALL_LIB_DIR="/usr/local/lib/ssl-certbot"
-readonly INSTALL_W_BIN="/usr/local/bin/w"
 readonly PROJECT_TAG="ssl-certbot"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SRC_DIR="${SCRIPT_DIR}/../src"
+
+INSTALL_COMMAND_NAME="${SSL_CERTBOT_BIN:-w}"
+if [[ ! "$INSTALL_COMMAND_NAME" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]]; then
+    echo "[ERROR] SSL_CERTBOT_BIN must be a command name containing letters, numbers, _ or -." >&2
+    exit 1
+fi
+INSTALL_COMMAND_BIN="/usr/local/bin/${INSTALL_COMMAND_NAME}"
 
 # ── Colours ─────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -105,33 +111,44 @@ done
 
 # ── Install w command ──────────────────────────────────────────────
 install_w_command() {
-    if [[ -f "$INSTALL_W_BIN" ]]; then
+    if [[ -f "$INSTALL_COMMAND_BIN" ]]; then
         # Check if it belongs to this project
-        if grep -qF "$PROJECT_TAG" "$INSTALL_W_BIN" 2>/dev/null; then
-            info "Updating existing w command (belongs to $PROJECT_TAG)."
+        if grep -qF "$PROJECT_TAG" "$INSTALL_COMMAND_BIN" 2>/dev/null; then
+            info "Updating existing ${INSTALL_COMMAND_NAME} command (belongs to $PROJECT_TAG)."
         else
             warn ""
-            warn "  /usr/local/bin/w already exists and belongs to another program."
+            warn "  ${INSTALL_COMMAND_BIN} already exists and belongs to another program."
             warn "  File content preview:"
-            head -5 "$INSTALL_W_BIN" 2>/dev/null | sed 's/^/    /' >&2
+            head -5 "$INSTALL_COMMAND_BIN" 2>/dev/null | sed 's/^/    /' >&2
             warn ""
-            read -rp "  Overwrite /usr/local/bin/w? [y/N]: " confirm
+            read -rp "  Overwrite ${INSTALL_COMMAND_BIN}? [y/N]: " confirm
             if [[ ! "$confirm" =~ ^[yY]$ ]]; then
-                warn "Skipping w command installation."
-                warn "You can still run: /usr/local/lib/ssl-certbot/ssl-certbot.sh"
-                return 0
+                if [[ "$INSTALL_COMMAND_NAME" == "w" ]]; then
+                    INSTALL_COMMAND_NAME="sslcert"
+                    INSTALL_COMMAND_BIN="/usr/local/bin/${INSTALL_COMMAND_NAME}"
+                    warn "Installing fallback command: ${INSTALL_COMMAND_BIN}"
+                    if [[ -f "$INSTALL_COMMAND_BIN" ]] && ! grep -qF "$PROJECT_TAG" "$INSTALL_COMMAND_BIN" 2>/dev/null; then
+                        warn "${INSTALL_COMMAND_BIN} is also occupied; skipping command installation."
+                        warn "You can still run: /usr/local/lib/ssl-certbot/ssl-certbot.sh"
+                        return 0
+                    fi
+                else
+                    warn "Skipping ${INSTALL_COMMAND_NAME} command installation."
+                    warn "You can still run: /usr/local/lib/ssl-certbot/ssl-certbot.sh"
+                    return 0
+                fi
             fi
         fi
     fi
 
     # Write w entry script with project tag embedded
-    cp -f "${SRC_DIR}/w-entry.sh" "$INSTALL_W_BIN"
+    cp -f "${SRC_DIR}/w-entry.sh" "$INSTALL_COMMAND_BIN"
     # Inject project tag as a comment for ownership detection
-    sed -i "2a\\# $PROJECT_TAG" "$INSTALL_W_BIN" 2>/dev/null || \
+    sed -i "2a\\# $PROJECT_TAG" "$INSTALL_COMMAND_BIN" 2>/dev/null || \
         sed -i '' "2a\\
-# $PROJECT_TAG" "$INSTALL_W_BIN" 2>/dev/null || true
-    chmod 755 "$INSTALL_W_BIN"
-    info "Installed: $INSTALL_W_BIN"
+# $PROJECT_TAG" "$INSTALL_COMMAND_BIN" 2>/dev/null || true
+    chmod 755 "$INSTALL_COMMAND_BIN"
+    info "Installed: $INSTALL_COMMAND_BIN"
 }
 
 install_w_command
@@ -146,10 +163,10 @@ if [[ ! -x "${INSTALL_LIB_DIR}/ssl-certbot.sh" ]]; then
     verify_ok=0
 fi
 
-if [[ -x "$INSTALL_W_BIN" ]]; then
-    info "w command: OK"
+if [[ -x "$INSTALL_COMMAND_BIN" ]]; then
+    info "${INSTALL_COMMAND_NAME} command: OK"
 else
-    warn "w command not installed (may be skipped due to conflict)."
+    warn "${INSTALL_COMMAND_NAME} command not installed (may be skipped due to conflict)."
 fi
 
 for cmd in bash curl openssl socat; do
@@ -184,18 +201,19 @@ echo "${C_GREEN}${C_BOLD}Installation complete!${C_RESET}"
 echo "────────────────────────────────────────"
 echo ""
 echo "  Usage:"
-echo "    w ssl                 Interactive SSL menu"
-echo "    w ssl example.com     Apply certificate for a domain"
-echo "    w ssl list            List managed certificates"
-echo "    w ssl status          Show certificate status"
-echo "    w ssl renew           Renew certificates"
-echo "    w ssl help            Show help"
+echo "    ${INSTALL_COMMAND_NAME} ssl                 Interactive SSL menu"
+echo "    ${INSTALL_COMMAND_NAME} ssl example.com     Apply certificate for a domain"
+echo "    ${INSTALL_COMMAND_NAME} ssl list            List managed certificates"
+echo "    ${INSTALL_COMMAND_NAME} ssl status          Show certificate status"
+echo "    ${INSTALL_COMMAND_NAME} ssl renew           Renew certificates"
+echo "    ${INSTALL_COMMAND_NAME} ssl help            Show help"
 echo ""
 echo "  Library: ${INSTALL_LIB_DIR}"
-if [[ -x "$INSTALL_W_BIN" ]]; then
-echo "  Command: ${INSTALL_W_BIN}"
+if [[ -x "$INSTALL_COMMAND_BIN" ]]; then
+echo "  Command: ${INSTALL_COMMAND_BIN}"
 fi
 echo ""
 echo "  ${C_YELLOW}Note:${C_RESET} acme.sh will be installed automatically on first use"
 echo "  if not already present."
+echo "  Certificate changes do not automatically reload your web/proxy service."
 echo ""
