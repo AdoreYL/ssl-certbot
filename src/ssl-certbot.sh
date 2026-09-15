@@ -56,8 +56,9 @@ ssl_interactive_menu() {
         1)
             echo ""
             echo "${C_BOLD}重要提示：${C_RESET}"
-            echo "  - 域名必须已解析到本机公网 IP"
+            echo "  - 域名 DNS 记录必须与所选网络模式的本机地址匹配"
             echo "  - 公网 TCP 80 必须可访问"
+            echo "  - IPv4 校验 A 记录，IPv6 校验 AAAA 记录，双栈模式两者都校验"
             echo "  - 工具只会暂停实际占用 80 或 443 端口、且能够确认管理方式的服务"
             echo "  - 无法确认来源的进程不会被强制停止"
             echo "  - 证书申请完成后，工具会恢复本次暂停的服务"
@@ -96,7 +97,7 @@ ssl_cmd_remove() {
 
     echo ""
     echo "${C_YELLOW}${C_BOLD}警告：${C_RESET} 将删除以下本地证书文件："
-    echo "  /root/cert/${domain}/"
+    echo "  ${SSL_CERT_BASE}/${domain}/"
     echo "  同时清除 acme.sh 的本地证书记录。"
     echo "  此操作不会向证书颁发机构撤销已签发的证书。"
     read -rp "  输入 yes 确认删除：" confirm
@@ -132,6 +133,8 @@ ssl_cmd_update() {
 # ── Command: apply ──────────────────────────────────────────────────
 ssl_cmd_apply() {
     local domain="$1"
+    local requested_mode="${2:-}"
+    local mode
 
     # Validate domain
     if ! ssl_validate_domain "$domain"; then
@@ -141,14 +144,20 @@ ssl_cmd_apply() {
     ssl_log INFO "开始处理证书：$domain"
     ssl_log INFO "系统：$SSL_OS $SSL_OS_VER，初始化系统：$SSL_INIT"
 
+    mode=$(ssl_select_network_mode "$requested_mode") || return 1
+    ssl_log INFO "验证网络模式：$mode"
+
     # Ensure acme.sh is available
     ssl_ensure_acme
 
     # Acquire lock
     ssl_acquire_lock
 
-    # Check DNS (basic: resolve domain, compare with VPS IP)
-    ssl_check_dns "$domain"
+    # DNS preflight must finish before any service can be paused.
+    if ! ssl_check_dns "$domain" "$mode"; then
+        ssl_log ERROR "无法继续：DNS 预检未通过。"
+        return 1
+    fi
 
     # Pause services on 80/443
     echo ""
@@ -162,7 +171,7 @@ ssl_cmd_apply() {
     echo ""
     echo "${C_BOLD}正在申请证书...${C_RESET}"
     local issue_result=0
-    ssl_issue_cert "$domain" || issue_result=$?
+    ssl_issue_cert "$domain" "$mode" || issue_result=$?
 
     # Restore services (always, regardless of result)
     echo ""
@@ -311,7 +320,7 @@ ssl_cmd_help() {
     echo ""
     echo "  ${C_BOLD}用法：${C_RESET}"
     echo "    w ssl                    打开交互式菜单"
-    echo "    w ssl <域名>             申请或续期证书"
+    echo "    w ssl <域名> [ipv4|ipv6|dual] 申请或续期证书"
     echo "    w ssl list               列出已管理的证书"
     echo "    w ssl status [域名]      查看证书状态"
     echo "    w ssl renew [域名]       手动续期证书"
@@ -322,15 +331,15 @@ ssl_cmd_help() {
     echo "    w ssl help               查看帮助"
     echo ""
     echo "  ${C_BOLD}工作方式：${C_RESET}"
-    echo "    1. 域名必须解析到本机公网 IP"
+    echo "    1. IPv4 校验 A 记录，IPv6 校验 AAAA 记录，双栈模式两者都校验"
     echo "    2. TCP 80 必须可访问，用于 HTTP-01 验证"
     echo "    3. 仅暂停可确认管理方式且实际占用 80/443 的服务"
     echo "    4. 完成后恢复本次暂停的服务"
     echo "    5. 通过 cron 自动续期"
     echo ""
     echo "  ${C_BOLD}证书路径：${C_RESET}"
-    echo "    /root/cert/<domain>/fullchain.pem"
-    echo "    /root/cert/<domain>/privkey.pem"
+    echo "    /etc/letsencrypt/live/<domain>/fullchain.pem"
+    echo "    /etc/letsencrypt/live/<domain>/privkey.pem"
     echo ""
     echo "  ${C_BOLD}支持系统：${C_RESET}"
     echo "    Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Alpine 3.x"
@@ -346,59 +355,123 @@ ssl_cmd_help() {
     echo ""
 }
 
-# ── DNS check (basic) ──────────────────────────────────────────────
-ssl_check_dns() {
-    local domain="$1"
+# ── DNS and network-mode selection ─────────────────────────────────
+ssl_select_network_mode() {
+    local mode="${1:-}"
 
-    ssl_log INFO "正在检查 $domain 的 DNS 解析..."
-
-    # Get VPS public IP
-    local vps_ip=""
-    vps_ip=$(curl -s -4 --max-time 10 https://ifconfig.me 2>/dev/null || \
-             curl -s -4 --max-time 10 https://api.ipify.org 2>/dev/null || \
-             curl -s -4 --max-time 10 https://icanhazip.com 2>/dev/null || \
-             echo "")
-
-    if [[ -z "$vps_ip" ]]; then
-        ssl_log WARN "无法确定 VPS 公网 IP，将继续执行。"
+    if [[ -n "$mode" ]]; then
+        ssl_validate_network_mode "$mode" || return 1
+        printf '%s\n' "$mode"
         return 0
     fi
 
-    ssl_log INFO "VPS 公网 IP：$vps_ip"
-
-    # Resolve domain
-    local domain_ip=""
-    if command -v dig >/dev/null 2>&1; then
-        domain_ip=$(dig +short A "$domain" 2>/dev/null | head -1)
-    elif command -v nslookup >/dev/null 2>&1; then
-        domain_ip=$(nslookup "$domain" 2>/dev/null | awk '/^Address:/ && NR>2 {print $2}' | head -1)
-    elif command -v host >/dev/null 2>&1; then
-        domain_ip=$(host -t A "$domain" 2>/dev/null | awk '/has address/ {print $4}' | head -1)
-    else
-        # Use getent as last resort
-        domain_ip=$(getent ahosts "$domain" 2>/dev/null | awk 'NR==1 {print $1}')
+    if [[ ! -t 0 ]]; then
+        ssl_log INFO "非交互式执行未指定网络模式，将使用双栈模式。"
+        printf '%s\n' dual
+        return 0
     fi
 
-    if [[ -z "$domain_ip" ]]; then
-        ssl_log ERROR "无法解析域名：$domain"
-        ssl_log ERROR "请确认 DNS 已配置并完成传播。"
+    echo ""
+    echo "  请选择证书验证网络模式："
+    echo "  1. IPv4（仅要求 A 记录与本机 IPv4 匹配）"
+    echo "  2. IPv6（仅要求 AAAA 记录与本机 IPv6 匹配）"
+    echo "  3. 双栈（要求 A 与 AAAA 记录都与本机匹配）"
+    read -rp "  请选择 [1-3，默认 3]：" mode
+    case "${mode:-3}" in
+        1|ipv4) printf '%s\n' ipv4 ;;
+        2|ipv6) printf '%s\n' ipv6 ;;
+        3|dual) printf '%s\n' dual ;;
+        *)
+            ssl_log ERROR "无效的网络模式选项。"
+            return 1
+            ;;
+    esac
+}
+
+ssl_resolve_dns_records() {
+    local domain="$1"
+    local record_type="$2"
+
+    if command -v dig >/dev/null 2>&1; then
+        dig +short "$record_type" "$domain" 2>/dev/null | sed '/^$/d'
+    elif command -v host >/dev/null 2>&1; then
+        case "$record_type" in
+            A) host -t A "$domain" 2>/dev/null | awk '/has address/ { print $4 }' ;;
+            AAAA) host -t AAAA "$domain" 2>/dev/null | awk '/has IPv6 address/ { print $5 }' ;;
+        esac
+    elif command -v nslookup >/dev/null 2>&1; then
+        nslookup -type="$record_type" "$domain" 2>/dev/null | awk -v type="$record_type" '
+            type == "A" && /^Address: / && $2 ~ /^[0-9.]+$/ { print $2 }
+            type == "AAAA" && /^Address: / && $2 ~ /:/ { print $2 }
+        '
+    elif [[ "$record_type" == "A" ]]; then
+        getent ahostsv4 "$domain" 2>/dev/null | awk '{ print $1 }' | sort -u
+    else
+        getent ahostsv6 "$domain" 2>/dev/null | awk '{ print $1 }' | sort -u
+    fi
+}
+
+ssl_local_ip_addresses() {
+    local family="$1"
+
+    if command -v ip >/dev/null 2>&1; then
+        case "$family" in
+            ipv4) ip -o -4 addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }' ;;
+            ipv6) ip -o -6 addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }' ;;
+        esac
+    elif command -v ifconfig >/dev/null 2>&1; then
+        case "$family" in
+            ipv4) ifconfig 2>/dev/null | awk '/inet (addr:)?/ { sub("addr:", "", $2); if ($2 !~ /^127\./) print $2 }' ;;
+            ipv6) ifconfig 2>/dev/null | awk '/inet6/ { value=$3; sub("addr:", "", value); sub("%.*", "", value); if (value !~ /^fe80:/) print value }' ;;
+        esac
+    fi
+}
+
+ssl_dns_records_match_local_addresses() {
+    local record_type="$1"
+    local family="$2"
+    local records local_addresses record
+
+    records=$(ssl_resolve_dns_records "$3" "$record_type")
+    local_addresses=$(ssl_local_ip_addresses "$family")
+    if [[ -z "$records" ]]; then
+        ssl_log ERROR "域名 $3 未找到 $record_type 记录。"
+        return 1
+    fi
+    if [[ -z "$local_addresses" ]]; then
+        ssl_log ERROR "本机未找到可用的 $family 全局地址。"
         return 1
     fi
 
-    ssl_log INFO "域名 $domain 解析到：$domain_ip"
-
-    if [[ "$domain_ip" != "$vps_ip" ]]; then
-        ssl_log WARN "域名 IP（$domain_ip）与 VPS IP（$vps_ip）不一致。"
-        ssl_log WARN "若 VPS 使用其他公网 IP 或 IPv6，这可能符合预期。"
-        echo ""
-        read -rp "  仍要继续吗？[y/N]：" confirm
-        if [[ ! "$confirm" =~ ^[yY]$ ]]; then
-            ssl_log INFO "用户已取消。"
-            return 1
+    ssl_log INFO "域名 $3 的 $record_type 记录：$(printf '%s' "$records" | paste -sd ',' -)"
+    ssl_log INFO "本机可用 $family 地址：$(printf '%s' "$local_addresses" | paste -sd ',' -)"
+    while read -r record; do
+        [[ -z "$record" ]] && continue
+        if grep -Fxq "$record" <<< "$local_addresses"; then
+            ssl_log INFO "已确认 $record_type 记录与本机 $family 地址匹配：$record"
+            return 0
         fi
-    fi
+    done <<< "$records"
 
-    return 0
+    ssl_log ERROR "域名 $3 的 $record_type 记录与本机 $family 地址不匹配。"
+    return 1
+}
+
+ssl_check_dns() {
+    local domain="$1"
+    local mode="$2"
+
+    ssl_log INFO "正在检查 $domain 的 DNS 解析..."
+    ssl_validate_network_mode "$mode" || return 1
+
+    case "$mode" in
+        ipv4) ssl_dns_records_match_local_addresses A ipv4 "$domain" ;;
+        ipv6) ssl_dns_records_match_local_addresses AAAA ipv6 "$domain" ;;
+        dual)
+            ssl_dns_records_match_local_addresses A ipv4 "$domain" && \
+                ssl_dns_records_match_local_addresses AAAA ipv6 "$domain"
+            ;;
+    esac
 }
 
 # ── Main dispatch ───────────────────────────────────────────────────
@@ -407,6 +480,7 @@ main() {
     ssl_init_log
     ssl_detect_os
     ssl_ensure_deps
+    ssl_migrate_legacy_certificates
 
     # Parse subcommand (case-insensitive)
     local subcmd="${1:-}"
@@ -442,9 +516,11 @@ main() {
             ;;
         *)
             # Treat as domain name
-            ssl_cmd_apply "$subcmd"
+            ssl_cmd_apply "$subcmd" "${2:-}"
             ;;
     esac
 }
 
-main "$@"
+if [[ "${SSL_CERTBOT_NO_MAIN:-0}" != "1" ]]; then
+    main "$@"
+fi

@@ -6,15 +6,17 @@ set -euo pipefail
 umask 077
 
 # ── Constants ───────────────────────────────────────────────────────
-readonly SSL_CERT_BASE="/root/cert"
-readonly SSL_LOG_PRIMARY="/var/log/ssl-certbot.log"
-readonly SSL_LOG_FALLBACK="/root/.ssl-certbot/logs/ssl-certbot.log"
-readonly SSL_STATE_DIR="/run/ssl-certbot"
-readonly SSL_LOCK_FILE="/run/ssl-certbot.lock"
-readonly SSL_ACME_HOME="/root/.acme.sh"
-readonly SSL_CRON_MARKER="# ssl-certbot auto-renew"
-readonly SSL_PROJECT_TAG="ssl-certbot"
-readonly SSL_W_BIN="/usr/local/bin/w"
+readonly SSL_CERT_BASE="${SSL_CERT_BASE:-/etc/letsencrypt/live}"
+readonly SSL_LEGACY_CERT_BASE="${SSL_LEGACY_CERT_BASE:-/root/cert}"
+readonly SSL_CERTBOT_CONFIG_DIR="${SSL_CERTBOT_CONFIG_DIR:-/etc/letsencrypt/ssl-certbot}"
+readonly SSL_LOG_PRIMARY="${SSL_LOG_PRIMARY:-/var/log/ssl-certbot.log}"
+readonly SSL_LOG_FALLBACK="${SSL_LOG_FALLBACK:-/root/.ssl-certbot/logs/ssl-certbot.log}"
+readonly SSL_STATE_DIR="${SSL_STATE_DIR:-/run/ssl-certbot}"
+readonly SSL_LOCK_FILE="${SSL_LOCK_FILE:-/run/ssl-certbot.lock}"
+readonly SSL_ACME_HOME="${SSL_ACME_HOME:-/root/.acme.sh}"
+readonly SSL_CRON_MARKER="${SSL_CRON_MARKER:-# ssl-certbot auto-renew}"
+readonly SSL_PROJECT_TAG="${SSL_PROJECT_TAG:-ssl-certbot}"
+readonly SSL_W_BIN="${SSL_W_BIN:-/usr/local/bin/w}"
 
 # Supported listener process names. The actual systemd unit is resolved from
 # the listener PID's cgroup at runtime and is never derived from this list.
@@ -295,6 +297,81 @@ ssl_validate_domain() {
     fi
 
     return 0
+}
+
+# ── Certificate network-mode state ─────────────────────────────────
+ssl_validate_network_mode() {
+    case "$1" in
+        ipv4|ipv6|dual) return 0 ;;
+        *)
+            ssl_log ERROR "无效的网络模式：${1:-空}。可选值为 ipv4、ipv6 或 dual。"
+            return 1
+            ;;
+    esac
+}
+
+ssl_network_mode_file() {
+    local domain="$1"
+    printf '%s/%s.conf\n' "$SSL_CERTBOT_CONFIG_DIR" "$domain"
+}
+
+ssl_save_network_mode() {
+    local domain="$1"
+    local mode="$2"
+    local mode_file
+
+    ssl_validate_network_mode "$mode" || return 1
+    mode_file=$(ssl_network_mode_file "$domain")
+    mkdir -p "$SSL_CERTBOT_CONFIG_DIR"
+    chmod 700 "$SSL_CERTBOT_CONFIG_DIR"
+    printf 'SSL_CERTBOT_NETWORK_MODE=%s\n' "$mode" > "$mode_file"
+    chmod 600 "$mode_file"
+}
+
+ssl_load_network_mode() {
+    local domain="$1"
+    local mode_file mode=""
+    mode_file=$(ssl_network_mode_file "$domain")
+
+    if [[ -r "$mode_file" ]]; then
+        mode=$(sed -n 's/^SSL_CERTBOT_NETWORK_MODE=//p' "$mode_file" | head -n 1)
+    fi
+    if ssl_validate_network_mode "$mode" 2>/dev/null; then
+        printf '%s\n' "$mode"
+    else
+        printf '%s\n' dual
+    fi
+}
+
+ssl_remove_network_mode() {
+    local domain="$1"
+    rm -f "$(ssl_network_mode_file "$domain")"
+}
+
+ssl_migrate_legacy_certificates() {
+    local legacy_dir domain target_dir
+
+    [[ -d "$SSL_LEGACY_CERT_BASE" ]] || return 0
+    for legacy_dir in "$SSL_LEGACY_CERT_BASE"/*/; do
+        [[ -d "$legacy_dir" ]] || continue
+        domain=$(basename "$legacy_dir")
+        [[ -f "${legacy_dir}fullchain.pem" && -f "${legacy_dir}privkey.pem" ]] || continue
+        target_dir="${SSL_CERT_BASE}/${domain}"
+
+        if [[ -e "${target_dir}/fullchain.pem" || -e "${target_dir}/privkey.pem" ]]; then
+            ssl_log WARN "已跳过旧证书迁移：$domain 的新目录中已存在证书文件。"
+            continue
+        fi
+
+        mkdir -p "$target_dir"
+        mv "${legacy_dir}fullchain.pem" "${target_dir}/fullchain.pem"
+        mv "${legacy_dir}privkey.pem" "${target_dir}/privkey.pem"
+        rmdir "$legacy_dir" 2>/dev/null || true
+        chmod 700 "$SSL_CERT_BASE" "$target_dir"
+        chmod 644 "${target_dir}/fullchain.pem"
+        chmod 600 "${target_dir}/privkey.pem"
+        ssl_log INFO "已迁移旧证书：$domain -> $target_dir"
+    done
 }
 
 # ── Concurrency lock ───────────────────────────────────────────────

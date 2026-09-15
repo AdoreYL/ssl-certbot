@@ -24,8 +24,8 @@ curl -fsSL https://raw.githubusercontent.com/AdoreYL/ssl-certbot/main/install.sh
 ```
 
 ```bash
-# 安装后，直接为域名申请证书
-w ssl example.com
+# 安装后，按 IPv6 模式为域名申请证书
+w ssl example.com ipv6
 
 # 或调出交互式操作菜单
 w ssl
@@ -51,7 +51,7 @@ sslcert ssl example.com
 | 命令 | 说明 |
 |------|------|
 | `w ssl` | 打开交互式管理菜单 |
-| `w ssl <domain>` | 申请或续期指定域名证书 |
+| `w ssl <domain> [ipv4\|ipv6\|dual]` | 按指定网络模式申请或续期证书；未指定时交互选择 |
 | `w ssl list` | 列出所有已管理的证书及是否进入续期窗口 |
 | `w ssl status` | 查看指定域名的详细证书状态与端口环境 |
 | `w ssl renew` | 批量手动续期所有证书 |
@@ -66,11 +66,11 @@ sslcert ssl example.com
 
 ## 工作机制
 
-1. **域名与 DNS 预检**：校验域名格式合法性，检查公网 DNS 是否已正确解析到本机公网 IP。
+1. **域名、网络模式与 DNS 预检**：校验域名格式；IPv4 模式要求 A 记录匹配本机 IPv4，IPv6 模式要求 AAAA 记录匹配本机 IPv6，双栈模式要求两者都匹配。本机地址直接从网卡读取，不会把 Cloudflare WARP 等出口 IPv4 当作服务器地址。
 2. **端口占用检测**：检测当前占用 TCP 80 与 443 端口的具体服务进程。
 3. **安全暂停已确认服务**：仅当受支持的 Web 服务监听 PID 可由 `/proc/<PID>/cgroup` 确认归属实际 systemd 单元时，才会暂停该单元；若 cgroup 明确归属某个正在运行的 Docker 容器，则只暂停该容器；检测到 `docker-proxy` 时仅处理可关联到同端口发布映射的 Docker 容器。无法确认来源的进程不会被强制停止。
 4. **HTTP-01 验证**：启动 `acme.sh --standalone` 监听 80 端口，完成 Let's Encrypt 证书申请与签发。
-5. **规范归档证书**：将签发的证书与私钥统一安装归档到 `/root/cert/<domain>/` 目录。
+5. **规范归档证书**：将签发的证书与私钥统一安装归档到 `/etc/letsencrypt/live/<domain>/` 目录。
 6. **现场完全复原**：无论签发成功、失败或人为中断（`Ctrl+C`），自动恢复先前暂停的所有服务，保障业务连续性。
 7. **自动续期配置**：注册系统 Cron 任务，实现到期前无人值守自动续签。
 
@@ -86,22 +86,40 @@ sslcert ssl example.com
 所有证书均按域名分目录规范化存放：
 
 ```
-/root/cert/<domain>/fullchain.pem   # 证书公钥链（权限 644）
-/root/cert/<domain>/privkey.pem     # 证书私钥（权限 600）
+/etc/letsencrypt/live/<domain>/fullchain.pem   # 证书公钥链（权限 644）
+/etc/letsencrypt/live/<domain>/privkey.pem     # 证书私钥（权限 600）
 ```
 
 示例：
 
 ```
-/root/cert/hk.example.com/fullchain.pem
-/root/cert/hk.example.com/privkey.pem
+/etc/letsencrypt/live/hk.example.com/fullchain.pem
+/etc/letsencrypt/live/hk.example.com/privkey.pem
 ```
 
 各域名独立目录隔离存储，绝不发生覆盖冲突。
 
 列表和详情中的到期时间会统一换算为中国标准时间，例如 `2026年12月06日 17:30:50（中国标准时间）`。
 
-删除证书可使用 `w ssl remove <domain>`，或在交互菜单中选择“删除证书”。该操作会删除 `/root/cert/<domain>/` 与对应的 acme.sh 本地记录，但不会向 Let's Encrypt 撤销已经签发的证书。
+删除证书可使用 `w ssl remove <domain>`，或在交互菜单中选择“删除证书”。该操作会删除 `/etc/letsencrypt/live/<domain>/`、对应的网络模式配置与 acme.sh 本地记录，但不会向 Let's Encrypt 撤销已经签发的证书。
+
+旧版工具写入 `/root/cert/<domain>/` 的证书会在后续运行时自动迁移到新目录；如果新目录已存在同名证书文件，则不会覆盖。
+
+## IPv4、IPv6 与双栈
+
+申请时可在交互菜单选择网络模式，也可以直接指定：
+
+```bash
+w ssl example.com ipv4
+w ssl example.com ipv6
+w ssl example.com dual
+```
+
+- `ipv4`：要求域名的 A 记录与本机全局 IPv4 地址匹配，acme.sh 仅监听 IPv4。
+- `ipv6`：要求域名的 AAAA 记录与本机全局 IPv6 地址匹配，acme.sh 仅监听 IPv6。适用于只有原生 IPv6 的 VPS；WARP 的出口 IPv4 不参与判断。
+- `dual`：要求 A 和 AAAA 都与本机地址匹配，acme.sh 保持双栈 standalone 监听。
+
+模式会按域名保存，之后的手动续期与 Cron 自动续期会自动复用。HTTP-01 的实际访问路径由 Let's Encrypt 根据 DNS 解析决定：对应 A 或 AAAA 必须指向本机，且公网 TCP 80 必须可访问。双栈域名的两个地址都应能访问 TCP 80。
 
 工具不要求配置证书通知邮箱，会以无联系邮箱的 Let’s Encrypt 账户完成注册并依靠自动续期维护证书。若旧版脚本曾写入 `ssl-certbot@localhost`，新版会在运行时自动清除这条无效配置。
 

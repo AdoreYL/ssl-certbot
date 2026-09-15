@@ -29,11 +29,28 @@ ssl_cert_expiry_from_file() {
 }
 
 # ── Issue certificate ───────────────────────────────────────────────
+ssl_acme_listener_args() {
+    case "$1" in
+        ipv4) printf '%s\n' --listen-v4 ;;
+        ipv6) printf '%s\n' --listen-v6 ;;
+        dual) return 0 ;;
+        *)
+            ssl_log ERROR "无效的网络模式：${1:-空}。"
+            return 1
+            ;;
+    esac
+}
+
 ssl_issue_cert() {
     local domain="$1"
+    local mode="$2"
     local cert_dir="${SSL_CERT_BASE}/${domain}"
     local fullchain="${cert_dir}/fullchain.pem"
     local privkey="${cert_dir}/privkey.pem"
+    local -a listener_args=()
+
+    ssl_validate_network_mode "$mode" || return 1
+    mapfile -t listener_args < <(ssl_acme_listener_args "$mode")
 
     ssl_log INFO "正在申请证书：$domain"
     ssl_log INFO "方式：Let's Encrypt HTTP-01 独立模式"
@@ -50,6 +67,7 @@ ssl_issue_cert() {
         -d "$domain" \
         --server letsencrypt \
         --keylength 2048 \
+        "${listener_args[@]}" \
         --log "$_ssl_log_file" 2>&1
     acme_exit=$?
     set -e
@@ -85,6 +103,11 @@ ssl_issue_cert() {
     chmod 700 "$cert_dir"
     chmod 700 "$SSL_CERT_BASE"
 
+    if ! ssl_save_network_mode "$domain" "$mode"; then
+        ssl_log ERROR "证书已安装，但无法保存 $domain 的网络模式。"
+        return 1
+    fi
+
     ssl_log INFO "证书已签发并保存。"
     ssl_log INFO "证书链：$fullchain"
     ssl_log INFO "私钥：$privkey"
@@ -100,9 +123,11 @@ ssl_issue_cert() {
 # ── Renew certificate ──────────────────────────────────────────────
 ssl_renew_cert() {
     local domain="$1"
+    local mode
     local cert_dir="${SSL_CERT_BASE}/${domain}"
     local fullchain="${cert_dir}/fullchain.pem"
     local privkey="${cert_dir}/privkey.pem"
+    local -a listener_args=()
 
     ssl_log INFO "正在续期证书：$domain"
 
@@ -112,12 +137,20 @@ ssl_renew_cert() {
         return 1
     fi
 
+    mode=$(ssl_load_network_mode "$domain")
+    if [[ "$mode" == "dual" && ! -r "$(ssl_network_mode_file "$domain")" ]]; then
+        ssl_log WARN "$domain 未保存网络模式，将按旧版双栈方式续期。"
+    fi
+    ssl_validate_network_mode "$mode" || return 1
+    mapfile -t listener_args < <(ssl_acme_listener_args "$mode")
+
     local acme_exit=0
     set +e
     "$SSL_ACME_HOME/acme.sh" --renew \
         -d "$domain" \
         --standalone \
         --server letsencrypt \
+        "${listener_args[@]}" \
         --log "$_ssl_log_file" 2>&1
     acme_exit=$?
     set -e
@@ -294,6 +327,7 @@ ssl_list_certs() {
         echo "    证书链：$fullchain"
         echo "    私钥：$privkey"
         echo "    到期时间：${expiry:-未知}"
+        echo "    网络模式：$(ssl_load_network_mode "$domain")"
         echo "    剩余有效期：${status_color}${days_left}${C_RESET}"
         echo "    签发者：${issuer:-未知}"
     done
@@ -336,6 +370,7 @@ ssl_cert_status() {
     echo "  主题：${subject:-未知}"
     echo "  签发者：${issuer:-未知}"
     echo "  到期时间：${expiry:-未知}"
+    echo "  网络模式：$(ssl_load_network_mode "$domain")"
     echo "  序列号：${serial:-未知}"
     echo ""
 
@@ -381,6 +416,7 @@ ssl_remove_cert() {
     fi
 
     rm -rf "$cert_dir"
+    ssl_remove_network_mode "$domain"
     ssl_log INFO "已删除 $domain 的本地证书文件。"
     ssl_log INFO "此操作不会向证书颁发机构撤销已签发的证书。"
 }

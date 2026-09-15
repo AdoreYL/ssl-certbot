@@ -43,6 +43,144 @@ assert_not_contains() {
     fi
 }
 
+test_network_mode_persistence_and_legacy_certificate_migration() {
+    local case_dir="$TEST_TMP/network-state"
+    local cert_base="$case_dir/etc/letsencrypt/live"
+    local legacy_base="$case_dir/root/cert"
+    local config_dir="$case_dir/etc/letsencrypt/ssl-certbot"
+    local domain="ipv6.example.com"
+
+    mkdir -p "$legacy_base/$domain"
+    printf '%s\n' legacy-fullchain > "$legacy_base/$domain/fullchain.pem"
+    printf '%s\n' legacy-privkey > "$legacy_base/$domain/privkey.pem"
+
+    if (
+        SSL_CERT_BASE="$cert_base"
+        SSL_LEGACY_CERT_BASE="$legacy_base"
+        SSL_CERTBOT_CONFIG_DIR="$config_dir"
+        ssl_log() { :; }
+        source "$PROJECT_ROOT/src/common.sh"
+        ssl_save_network_mode "$domain" ipv6
+        [[ "$(ssl_load_network_mode "$domain")" == "ipv6" ]]
+        ssl_migrate_legacy_certificates
+    ); then
+        if [[ -f "$cert_base/$domain/fullchain.pem" ]] && \
+           [[ -f "$cert_base/$domain/privkey.pem" ]] && \
+           [[ ! -d "$legacy_base/$domain" ]]; then
+            pass "保存网络模式并迁移旧证书到 letsencrypt live 目录"
+        else
+            fail "保存网络模式并迁移旧证书到 letsencrypt live 目录"
+        fi
+    else
+        fail "保存网络模式并迁移旧证书到 letsencrypt live 目录"
+    fi
+}
+
+test_network_mode_rejects_invalid_values() {
+    if (
+        ssl_log() { :; }
+        source "$PROJECT_ROOT/src/common.sh"
+        ssl_validate_network_mode invalid
+    ); then
+        fail "网络模式拒绝无效值"
+    else
+        pass "网络模式拒绝无效值"
+    fi
+}
+
+test_ipv6_dns_validation_uses_local_addresses_without_ipv4_egress_lookup() {
+    local case_dir="$TEST_TMP/ipv6-dns"
+    local calls="$case_dir/calls"
+    mkdir -p "$case_dir"
+
+    if (
+        SSL_CERTBOT_NO_MAIN=1
+        ssl_log() { :; }
+        source "$PROJECT_ROOT/src/ssl-certbot.sh"
+        ssl_resolve_dns_records() {
+            [[ "$2" == "AAAA" ]] && printf '%s\n' '2406:da00:abcd::1'
+        }
+        ssl_local_ip_addresses() {
+            printf '%s\n' '2406:da00:abcd::1'
+        }
+        curl() { printf '%s\n' "$*" >> "$calls"; return 1; }
+        ssl_check_dns ipv6.example.com ipv6
+    ); then
+        assert_not_contains "$(cat "$calls" 2>/dev/null || true)" "-4" "IPv6 DNS 校验不查询 IPv4 出口地址"
+    else
+        fail "IPv6 DNS 校验不查询 IPv4 出口地址"
+    fi
+}
+
+test_dual_stack_dns_requires_matching_a_and_aaaa_records() {
+    if (
+        SSL_CERTBOT_NO_MAIN=1
+        ssl_log() { :; }
+        source "$PROJECT_ROOT/src/ssl-certbot.sh"
+        ssl_resolve_dns_records() {
+            [[ "$2" == "A" ]] && printf '%s\n' '198.51.100.20'
+        }
+        ssl_local_ip_addresses() {
+            case "$1" in
+                ipv4) printf '%s\n' '198.51.100.20' ;;
+                ipv6) printf '%s\n' '2001:db8::20' ;;
+            esac
+        }
+        ssl_check_dns dual.example.com dual
+    ); then
+        fail "双栈 DNS 校验要求同时存在匹配的 A 和 AAAA 记录"
+    else
+        pass "双栈 DNS 校验要求同时存在匹配的 A 和 AAAA 记录"
+    fi
+}
+
+test_issue_and_renew_reuse_saved_ipv6_listener_mode() {
+    local case_dir="$TEST_TMP/ipv6-acme"
+    local acme_home="$case_dir/acme"
+    local cert_base="$case_dir/live"
+    local config_dir="$case_dir/config"
+    local args_file="$case_dir/acme.args"
+    local domain="ipv6.example.com"
+    mkdir -p "$acme_home/$domain" "$case_dir"
+
+    cat > "$acme_home/acme.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$ACME_ARGS_FILE"
+if [[ " $* " == *" --install-cert "* ]]; then
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --fullchain-file) fullchain="$2"; shift 2 ;;
+            --key-file) privkey="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    printf 'fullchain\n' > "$fullchain"
+    printf 'privkey\n' > "$privkey"
+fi
+EOF
+    chmod +x "$acme_home/acme.sh"
+
+    if (
+        SSL_ACME_HOME="$acme_home"
+        SSL_CERT_BASE="$cert_base"
+        SSL_CERTBOT_CONFIG_DIR="$config_dir"
+        SSL_LEGACY_CERT_BASE="$case_dir/legacy"
+        export ACME_ARGS_FILE="$args_file"
+        ssl_log() { :; }
+        source "$PROJECT_ROOT/src/common.sh"
+        source "$PROJECT_ROOT/src/cert.sh"
+        ssl_issue_cert "$domain" ipv6
+        ssl_renew_cert "$domain"
+    ); then
+        local acme_args
+        acme_args=$(<"$args_file")
+        assert_contains "$acme_args" "--issue --standalone -d $domain --server letsencrypt --keylength 2048 --listen-v6" "IPv6 申请使用仅 IPv6 监听"
+        assert_contains "$acme_args" "--renew -d $domain --standalone --server letsencrypt --listen-v6" "续期复用已保存的 IPv6 监听模式"
+    else
+        fail "IPv6 申请与续期使用已保存监听模式"
+    fi
+}
+
 test_renew_does_not_force_reissue() {
     local case_dir="$TEST_TMP/renew"
     local acme_home="$case_dir/acme"
@@ -68,13 +206,21 @@ fi
 EOF
     chmod +x "$acme_home/acme.sh"
 
-    SSL_ACME_HOME="$acme_home"
-    SSL_CERT_BASE="$cert_base"
-    _ssl_log_file="$case_dir/ssl-certbot.log"
-    ssl_log() { :; }
-    source "$PROJECT_ROOT/src/cert.sh"
-
-    ACME_ARGS_FILE="$args_file" ssl_renew_cert "$domain"
+    if ! (
+        SSL_ACME_HOME="$acme_home"
+        SSL_CERT_BASE="$cert_base"
+        SSL_CERTBOT_CONFIG_DIR="$case_dir/config"
+        _ssl_log_file="$case_dir/ssl-certbot.log"
+        export ACME_ARGS_FILE="$args_file"
+        ssl_log() { :; }
+        source "$PROJECT_ROOT/src/common.sh"
+        source "$PROJECT_ROOT/src/cert.sh"
+        ssl_renew_cert "$domain"
+    ); then
+        fail "普通续期调用 acme.sh --renew"
+        fail "普通续期不强制重新签发"
+        return
+    fi
 
     local renew_args
     renew_args=$(head -n 1 "$args_file")
@@ -110,6 +256,7 @@ test_remove_certificate_removes_local_files_and_acme_record() {
     local cert_base="$case_dir/certs"
     local acme_home="$case_dir/acme"
     local acme_args="$case_dir/acme.args"
+    local config_dir="$case_dir/config"
     local domain="example.com"
     mkdir -p "$cert_base/$domain" "$acme_home/$domain"
     printf '%s\n' certificate > "$cert_base/$domain/fullchain.pem"
@@ -124,19 +271,48 @@ EOF
         SSL_CERT_BASE="$cert_base"
         SSL_ACME_HOME="$acme_home"
         SSL_ACME_BIN="$case_dir/acme.sh"
+        SSL_CERTBOT_CONFIG_DIR="$config_dir"
         export ACME_ARGS_FILE="$acme_args"
         ssl_log() { :; }
         ssl_validate_domain() { return 0; }
+        mkdir -p "$config_dir"
+        printf '%s\n' 'SSL_CERTBOT_NETWORK_MODE=ipv6' > "$config_dir/$domain.conf"
+        source "$PROJECT_ROOT/src/common.sh"
         source "$PROJECT_ROOT/src/cert.sh"
         ssl_remove_cert "$domain" yes
     ); then
-        if [[ ! -d "$cert_base/$domain" ]] && grep -q -- '--remove -d example.com' "$acme_args"; then
-            pass "删除证书会移除本地文件和 acme.sh 记录"
+        if [[ ! -d "$cert_base/$domain" ]] && [[ ! -e "$config_dir/$domain.conf" ]] && \
+           grep -q -- '--remove -d example.com' "$acme_args"; then
+            pass "删除证书会移除本地文件、网络模式和 acme.sh 记录"
         else
-            fail "删除证书会移除本地文件和 acme.sh 记录"
+            fail "删除证书会移除本地文件、网络模式和 acme.sh 记录"
         fi
     else
-        fail "删除证书会移除本地文件和 acme.sh 记录"
+        fail "删除证书会移除本地文件、网络模式和 acme.sh 记录"
+    fi
+}
+
+test_dns_failure_does_not_pause_services() {
+    local case_dir="$TEST_TMP/dns-preflight"
+    local pause_marker="$case_dir/pause.called"
+    mkdir -p "$case_dir"
+
+    if (
+        SSL_CERTBOT_NO_MAIN=1
+        source "$PROJECT_ROOT/src/ssl-certbot.sh"
+        ssl_validate_domain() { return 0; }
+        ssl_select_network_mode() { printf '%s\n' ipv6; }
+        ssl_ensure_acme() { :; }
+        ssl_acquire_lock() { :; }
+        ssl_check_dns() { return 1; }
+        ssl_pause_port_services() { : > "$pause_marker"; }
+        ssl_cmd_apply example.com ipv6
+    ); then
+        fail "DNS 预检失败时不会暂停服务"
+    elif [[ ! -e "$pause_marker" ]]; then
+        pass "DNS 预检失败时不会暂停服务"
+    else
+        fail "DNS 预检失败时不会暂停服务"
     fi
 }
 
@@ -149,8 +325,10 @@ test_remove_certificate_requires_confirmation() {
 
     if (
         SSL_CERT_BASE="$cert_base"
+        SSL_ACME_HOME="$case_dir/acme"
         ssl_log() { :; }
         ssl_validate_domain() { return 0; }
+        source "$PROJECT_ROOT/src/common.sh"
         source "$PROJECT_ROOT/src/cert.sh"
         ssl_remove_cert "$domain" no
     ); then
@@ -318,8 +496,10 @@ test_renew_skip_does_not_pause_services() {
 
     if (
         SSL_CERT_BASE="$case_dir/certs"
+        SSL_CERTBOT_CONFIG_DIR="$case_dir/config"
         _ssl_log_file="$case_dir/ssl-certbot.log"
         ssl_log() { :; }
+        source "$PROJECT_ROOT/src/common.sh"
         source "$PROJECT_ROOT/src/cert.sh"
         ssl_cert_needs_renewal_file() { return 1; }
         ssl_pause_port_services() { : > "$pause_marker"; }
@@ -344,8 +524,10 @@ test_renew_failure_returns_nonzero() {
 
     if (
         SSL_CERT_BASE="$case_dir/certs"
+        SSL_CERTBOT_CONFIG_DIR="$case_dir/config"
         _ssl_log_file="$case_dir/ssl-certbot.log"
         ssl_log() { :; }
+        source "$PROJECT_ROOT/src/common.sh"
         source "$PROJECT_ROOT/src/cert.sh"
         ssl_cert_needs_renewal_file() { return 0; }
         ssl_pause_port_services() { :; }
@@ -467,10 +649,24 @@ test_readme_uses_pipe_installation_for_alpine() {
     assert_not_contains "$alpine_section" "bash <(" "Alpine 安装不使用可能受限的进程替换"
 }
 
+test_readme_documents_letsencrypt_live_path_and_network_modes() {
+    local readme
+    readme=$(<"$PROJECT_ROOT/README.md")
+
+    assert_contains "$readme" "/etc/letsencrypt/live/<domain>/fullchain.pem" "README 使用新的 letsencrypt 证书目录"
+    assert_contains "$readme" "w ssl <domain> [ipv4\\|ipv6\\|dual]" "README 说明 IPv4 IPv6 双栈命令"
+}
+
+test_network_mode_persistence_and_legacy_certificate_migration
+test_network_mode_rejects_invalid_values
+test_ipv6_dns_validation_uses_local_addresses_without_ipv4_egress_lookup
+test_dual_stack_dns_requires_matching_a_and_aaaa_records
+test_issue_and_renew_reuse_saved_ipv6_listener_mode
 test_renew_does_not_force_reissue
 test_certificate_expiry_uses_china_standard_time_format
 test_remove_certificate_removes_local_files_and_acme_record
 test_remove_certificate_requires_confirmation
+test_dns_failure_does_not_pause_services
 test_docker_inspect_finds_non_wildcard_bindings
 test_docker_container_name_requires_a_running_container
 test_supported_listener_uses_its_actual_systemd_unit
@@ -489,6 +685,7 @@ test_acme_setup_does_not_require_an_email_address
 test_acme_email_cleanup_covers_account_and_ca_configs
 test_ssl_menu_includes_update_and_uninstall_actions
 test_readme_uses_pipe_installation_for_alpine
+test_readme_documents_letsencrypt_live_path_and_network_modes
 
 if [[ "$fail_count" -ne 0 ]]; then
     printf '%s test(s) failed; %s passed.\n' "$fail_count" "$pass_count" >&2
