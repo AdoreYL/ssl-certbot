@@ -371,11 +371,13 @@ ssl_select_network_mode() {
         return 0
     fi
 
-    echo ""
-    echo "  请选择证书验证网络模式："
-    echo "  1. IPv4（仅要求 A 记录与本机 IPv4 匹配）"
-    echo "  2. IPv6（仅要求 AAAA 记录与本机 IPv6 匹配）"
-    echo "  3. 双栈（要求 A 与 AAAA 记录都与本机匹配）"
+    # This function returns the selected mode through stdout for command
+    # substitution, so interactive text must use stderr.
+    echo "" >&2
+    echo "  请选择证书验证网络模式：" >&2
+    echo "  1. IPv4（仅要求 A 记录与本机 IPv4 匹配）" >&2
+    echo "  2. IPv6（仅要求 AAAA 记录与本机 IPv6 匹配）" >&2
+    echo "  3. 双栈（要求 A 与 AAAA 记录都与本机匹配）" >&2
     read -rp "  请选择 [1-3，默认 3]：" mode
     case "${mode:-3}" in
         1|ipv4) printf '%s\n' ipv4 ;;

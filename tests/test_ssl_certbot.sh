@@ -88,6 +88,20 @@ test_network_mode_rejects_invalid_values() {
     fi
 }
 
+test_interactive_network_mode_menu_writes_to_terminal() {
+    local ssl_script selector
+    ssl_script=$(<"$PROJECT_ROOT/src/ssl-certbot.sh")
+    selector=$(printf '%s\n' "$ssl_script" | awk '
+        /^ssl_select_network_mode\(\)/ { found = 1 }
+        found { print }
+        found && /^}$/ { exit }
+    ')
+
+    assert_contains "$selector" 'echo "  1. IPv4（仅要求 A 记录与本机 IPv4 匹配）" >&2' "网络模式菜单的 IPv4 选项显示在终端"
+    assert_contains "$selector" 'echo "  2. IPv6（仅要求 AAAA 记录与本机 IPv6 匹配）" >&2' "网络模式菜单的 IPv6 选项显示在终端"
+    assert_contains "$selector" 'echo "  3. 双栈（要求 A 与 AAAA 记录都与本机匹配）" >&2' "网络模式菜单的双栈选项显示在终端"
+}
+
 test_ipv6_dns_validation_uses_local_addresses_without_ipv4_egress_lookup() {
     local case_dir="$TEST_TMP/ipv6-dns"
     local calls="$case_dir/calls"
@@ -659,6 +673,7 @@ test_readme_documents_letsencrypt_live_path_and_network_modes() {
 
 test_network_mode_persistence_and_legacy_certificate_migration
 test_network_mode_rejects_invalid_values
+test_interactive_network_mode_menu_writes_to_terminal
 test_ipv6_dns_validation_uses_local_addresses_without_ipv4_egress_lookup
 test_dual_stack_dns_requires_matching_a_and_aaaa_records
 test_issue_and_renew_reuse_saved_ipv6_listener_mode
