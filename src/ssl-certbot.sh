@@ -429,6 +429,28 @@ ssl_local_ip_addresses() {
     fi
 }
 
+ssl_public_ipv4_address() {
+    local endpoint address
+
+    # A cloud instance can have only a private NIC address while its public
+    # IPv4 is provided through 1:1 NAT. Query IPv4-only endpoints as a
+    # fallback for that case. IPv6 validation never calls this function.
+    for endpoint in \
+        "https://api.ipify.org" \
+        "https://ipv4.icanhazip.com" \
+        "https://ifconfig.me/ip"; do
+        address="$(curl -4 --connect-timeout 3 --max-time 8 -fsSL "$endpoint" 2>/dev/null || true)"
+        address="${address//$'\r'/}"
+        address="${address//$'\n'/}"
+        if [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            printf '%s\n' "$address"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 ssl_dns_records_match_local_addresses() {
     local record_type="$1"
     local family="$2"
@@ -454,6 +476,23 @@ ssl_dns_records_match_local_addresses() {
             return 0
         fi
     done <<< "$records"
+
+    if [[ "$family" == "ipv4" ]]; then
+        local public_ipv4
+        public_ipv4="$(ssl_public_ipv4_address || true)"
+        if [[ -n "$public_ipv4" ]]; then
+            ssl_log INFO "本机 IPv4 公网出口地址：$public_ipv4"
+            while read -r record; do
+                [[ -z "$record" ]] && continue
+                if [[ "$record" == "$public_ipv4" ]]; then
+                    ssl_log INFO "已确认 $record_type 记录与本机 IPv4 公网出口地址匹配：$record"
+                    return 0
+                fi
+            done <<< "$records"
+        else
+            ssl_log WARN "未能查询本机 IPv4 公网出口地址。"
+        fi
+    fi
 
     ssl_log ERROR "域名 $3 的 $record_type 记录与本机 $family 地址不匹配。"
     return 1

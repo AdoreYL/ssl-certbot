@@ -115,7 +115,7 @@ w ssl example.com ipv6
 w ssl example.com dual
 ```
 
-- `ipv4`：要求域名的 A 记录与本机全局 IPv4 地址匹配，acme.sh 仅监听 IPv4。
+- `ipv4`：要求域名的 A 记录与本机 IPv4 地址匹配；若网卡只有内网 IPv4，工具会查询 IPv4 公网出口地址以兼容云平台的 NAT 映射，acme.sh 仅监听 IPv4。
 - `ipv6`：要求域名的 AAAA 记录与本机全局 IPv6 地址匹配，acme.sh 仅监听 IPv6。适用于只有原生 IPv6 的 VPS；WARP 的出口 IPv4 不参与判断。
 - `dual`：要求 A 和 AAAA 都与本机地址匹配，acme.sh 保持双栈 standalone 监听。
 
