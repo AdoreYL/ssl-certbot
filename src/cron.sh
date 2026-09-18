@@ -55,7 +55,7 @@ ssl_cron_boot_enabled() {
 
 ssl_cron_job_installed() {
     ssl_cron_command_available && \
-        crontab -l 2>/dev/null | grep -F "$SSL_CRON_MARKER" | grep -q "renew-all\.sh"
+        crontab -l 2>/dev/null | grep -F "$SSL_CRON_MARKER" | grep -qF "renew-all.sh"
 }
 
 ssl_start_cron() {
@@ -115,22 +115,27 @@ ssl_install_cron_job() {
         return 1
     fi
 
-    if ssl_cron_job_installed; then
-        ssl_log INFO "自动续期 cron 任务已存在。"
-        return 0
-    fi
-
     # Determine the renewal script path
     local renew_script="/usr/local/lib/ssl-certbot/renew-all.sh"
 
-    # Cron commonly runs commands with /bin/sh, so use a portable fixed schedule.
-    local cron_entry="30 2 * * * ${renew_script} $SSL_CRON_MARKER"
+    # Keep three fixed slots so a failed 02:30 run can retry at 10:30 and
+    # 18:30. The renewal script decides whether the retry slots are active.
+    local cron_entries
+    cron_entries=$(cat <<EOF
+30 2 * * * ${renew_script} baseline ${SSL_CRON_MARKER}
+30 10 * * * ${renew_script} retry ${SSL_CRON_MARKER}
+30 18 * * * ${renew_script} retry ${SSL_CRON_MARKER}
+EOF
+)
 
-    # Append to crontab
-    (crontab -l 2>/dev/null || true; echo "$cron_entry") | crontab -
+    # Replace only ssl-certbot's managed entries, preserving unrelated jobs.
+    (
+        crontab -l 2>/dev/null | grep -vF "$SSL_CRON_MARKER" || true
+        printf '%s\n' "$cron_entries"
+    ) | crontab -
 
     # Verify
-    if crontab -l 2>/dev/null | grep -F "$SSL_CRON_MARKER" | grep -qF "$renew_script"; then
+    if [[ "$(crontab -l 2>/dev/null | grep -F "$SSL_CRON_MARKER" | grep -cF "$renew_script" || true)" -eq 3 ]]; then
         ssl_log INFO "自动续期 cron 任务已配置。"
         ssl_enable_cron_boot
         return 0

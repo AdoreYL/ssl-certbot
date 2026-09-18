@@ -9,6 +9,7 @@ umask 077
 readonly SSL_CERT_BASE="${SSL_CERT_BASE:-/etc/letsencrypt/live}"
 readonly SSL_LEGACY_CERT_BASE="${SSL_LEGACY_CERT_BASE:-/root/cert}"
 readonly SSL_CERTBOT_CONFIG_DIR="${SSL_CERTBOT_CONFIG_DIR:-/etc/letsencrypt/ssl-certbot}"
+readonly SSL_RENEW_RETRY_STATE="${SSL_RENEW_RETRY_STATE:-${SSL_CERTBOT_CONFIG_DIR}/renew-retry.state}"
 readonly SSL_LOG_PRIMARY="${SSL_LOG_PRIMARY:-/var/log/ssl-certbot.log}"
 readonly SSL_LOG_FALLBACK="${SSL_LOG_FALLBACK:-/root/.ssl-certbot/logs/ssl-certbot.log}"
 readonly SSL_STATE_DIR="${SSL_STATE_DIR:-/run/ssl-certbot}"

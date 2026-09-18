@@ -102,6 +102,23 @@ test_interactive_network_mode_menu_writes_to_terminal() {
     assert_contains "$selector" 'echo "  3. 双栈（要求 A 与 AAAA 记录都与本机匹配）" >&2' "网络模式菜单的双栈选项显示在终端"
 }
 
+test_renewal_retry_schedule_is_documented_and_persistent() {
+    local cron_script renew_script common readme
+    cron_script=$(<"$PROJECT_ROOT/src/cron.sh")
+    renew_script=$(<"$PROJECT_ROOT/src/renew-all.sh")
+    common=$(<"$PROJECT_ROOT/src/common.sh")
+    readme=$(<"$PROJECT_ROOT/README.md")
+
+    assert_contains "$cron_script" '30 2 * * * ${renew_script} baseline ${SSL_CRON_MARKER}' "自动续期保留每天 02:30 基准任务"
+    assert_contains "$cron_script" '30 10 * * * ${renew_script} retry ${SSL_CRON_MARKER}' "自动续期配置 10:30 重试任务"
+    assert_contains "$cron_script" '30 18 * * * ${renew_script} retry ${SSL_CRON_MARKER}' "自动续期配置 18:30 重试任务"
+    assert_contains "$renew_script" 'readonly RENEW_MAX_RETRIES=6' "自动续期最多重试 6 轮"
+    assert_contains "$renew_script" 'renew_save_retry_count "$retry_count"' "自动续期持久化失败重试次数"
+    assert_contains "$renew_script" 'renew_clear_retry_state' "自动续期成功或达到上限后清除重试状态"
+    assert_contains "$common" 'SSL_RENEW_RETRY_STATE' "重试状态保存到持久化配置目录"
+    assert_contains "$readme" '最多连续重试 6 轮' "README 说明 6 轮重试策略"
+}
+
 test_ipv6_dns_validation_uses_local_addresses_without_ipv4_egress_lookup() {
     local case_dir="$TEST_TMP/ipv6-dns"
     local calls="$case_dir/calls"
@@ -674,6 +691,7 @@ test_readme_documents_letsencrypt_live_path_and_network_modes() {
 test_network_mode_persistence_and_legacy_certificate_migration
 test_network_mode_rejects_invalid_values
 test_interactive_network_mode_menu_writes_to_terminal
+test_renewal_retry_schedule_is_documented_and_persistent
 test_ipv6_dns_validation_uses_local_addresses_without_ipv4_egress_lookup
 test_dual_stack_dns_requires_matching_a_and_aaaa_records
 test_issue_and_renew_reuse_saved_ipv6_listener_mode
