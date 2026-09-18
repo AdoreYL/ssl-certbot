@@ -419,12 +419,12 @@ ssl_local_ip_addresses() {
     if command -v ip >/dev/null 2>&1; then
         case "$family" in
             ipv4) ip -o -4 addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }' ;;
-            ipv6) ip -o -6 addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }' ;;
+            ipv6) ip -o -6 addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); if (tolower(a[1]) !~ /^(fc|fd)/) print a[1] }' ;;
         esac
     elif command -v ifconfig >/dev/null 2>&1; then
         case "$family" in
             ipv4) ifconfig 2>/dev/null | awk '/inet (addr:)?/ { sub("addr:", "", $2); if ($2 !~ /^127\./) print $2 }' ;;
-            ipv6) ifconfig 2>/dev/null | awk '/inet6/ { value=$3; sub("addr:", "", value); sub("%.*", "", value); if (value !~ /^fe80:/) print value }' ;;
+            ipv6) ifconfig 2>/dev/null | awk '/inet6/ { value=$3; sub("addr:", "", value); sub("%.*", "", value); if (tolower(value) !~ /^(fe80:|fc|fd)/) print value }' ;;
         esac
     fi
 }
@@ -451,6 +451,29 @@ ssl_public_ipv4_address() {
     return 1
 }
 
+ssl_public_ipv6_address() {
+    local endpoint address normalized
+
+    # A provider can publish an IPv6 address through a translation or tunnel
+    # while the guest only sees a non-public address. Never use IPv4 here: an
+    # IPv6 validation must be tied to the IPv6 path that Let's Encrypt uses.
+    for endpoint in \
+        "https://api64.ipify.org" \
+        "https://ipv6.icanhazip.com" \
+        "https://ifconfig.co/ip"; do
+        address="$(curl -6 --connect-timeout 3 --max-time 8 -fsSL "$endpoint" 2>/dev/null || true)"
+        address="${address//$'\r'/}"
+        address="${address//$'\n'/}"
+        normalized="${address,,}"
+        if [[ "$address" == *:* && "$normalized" != ::1 && "$normalized" != :: && "$normalized" != fe80:* && "$normalized" != fc* && "$normalized" != fd* ]]; then
+            printf '%s\n' "$address"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 ssl_dns_records_match_local_addresses() {
     local record_type="$1"
     local family="$2"
@@ -463,12 +486,12 @@ ssl_dns_records_match_local_addresses() {
         return 1
     fi
     if [[ -z "$local_addresses" ]]; then
-        ssl_log ERROR "本机未找到可用的 $family 全局地址。"
-        return 1
+        ssl_log WARN "本机未找到可用的 $family 全局地址，将尝试查询公网出口地址。"
+    else
+        ssl_log INFO "本机可用 $family 地址：$(printf '%s' "$local_addresses" | paste -sd ',' -)"
     fi
 
     ssl_log INFO "域名 $3 的 $record_type 记录：$(printf '%s' "$records" | paste -sd ',' -)"
-    ssl_log INFO "本机可用 $family 地址：$(printf '%s' "$local_addresses" | paste -sd ',' -)"
     while read -r record; do
         [[ -z "$record" ]] && continue
         if grep -Fxq "$record" <<< "$local_addresses"; then
@@ -491,6 +514,21 @@ ssl_dns_records_match_local_addresses() {
             done <<< "$records"
         else
             ssl_log WARN "未能查询本机 IPv4 公网出口地址。"
+        fi
+    elif [[ "$family" == "ipv6" ]]; then
+        local public_ipv6
+        public_ipv6="$(ssl_public_ipv6_address || true)"
+        if [[ -n "$public_ipv6" ]]; then
+            ssl_log INFO "本机 IPv6 公网出口地址：$public_ipv6"
+            while read -r record; do
+                [[ -z "$record" ]] && continue
+                if [[ "${record,,}" == "${public_ipv6,,}" ]]; then
+                    ssl_log INFO "已确认 $record_type 记录与本机 IPv6 公网出口地址匹配：$record"
+                    return 0
+                fi
+            done <<< "$records"
+        else
+            ssl_log WARN "未能查询本机 IPv6 公网出口地址。"
         fi
     fi
 

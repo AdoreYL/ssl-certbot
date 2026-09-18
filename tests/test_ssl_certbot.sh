@@ -143,6 +143,24 @@ test_ipv6_dns_validation_uses_local_addresses_without_ipv4_egress_lookup() {
     fi
 }
 
+test_ipv6_local_address_filter_excludes_ula_addresses() {
+    local addresses
+
+    addresses=$(
+        SSL_CERTBOT_NO_MAIN=1
+        source "$PROJECT_ROOT/src/ssl-certbot.sh"
+        ip() {
+            printf '%s\n' \
+                '2: eth0    inet6 fd00::100/64 scope global' \
+                '2: eth0    inet6 2001:db8:100::165/64 scope global'
+        }
+        ssl_local_ip_addresses ipv6
+    )
+
+    assert_not_contains "$addresses" "fd00::100" "IPv6 本机地址忽略 ULA 私有地址"
+    assert_contains "$addresses" "2001:db8:100::165" "IPv6 本机地址保留公网地址"
+}
+
 test_ipv4_dns_validation_accepts_public_nat_address() {
     local case_dir="$TEST_TMP/ipv4-nat"
     local calls="$case_dir/calls"
@@ -167,6 +185,34 @@ test_ipv4_dns_validation_accepts_public_nat_address() {
         assert_contains "$(cat "$calls")" "-4" "IPv4 NAT 校验使用 IPv4 公网出口查询"
     else
         fail "IPv4 NAT 校验接受与公网出口匹配的 A 记录"
+    fi
+}
+
+test_ipv6_dns_validation_accepts_public_nat_address() {
+    local case_dir="$TEST_TMP/ipv6-nat"
+    local calls="$case_dir/calls"
+    mkdir -p "$case_dir"
+
+    if (
+        SSL_CERTBOT_NO_MAIN=1
+        ssl_log() { :; }
+        source "$PROJECT_ROOT/src/ssl-certbot.sh"
+        ssl_resolve_dns_records() {
+            [[ "$2" == "AAAA" ]] && printf '%s\n' '2001:db8:100::165'
+        }
+        ssl_local_ip_addresses() {
+            [[ "$1" == "ipv6" ]] && printf '%s\n' 'fd00::100'
+        }
+        curl() {
+            printf '%s\n' "$*" >> "$calls"
+            printf '%s\n' '2001:db8:100::165'
+        }
+        ssl_check_dns nat6.example.com ipv6
+    ); then
+        assert_contains "$(cat "$calls")" "-6" "IPv6 NAT 校验使用 IPv6 公网出口查询"
+        assert_not_contains "$(cat "$calls")" "-4" "IPv6 NAT 校验不使用 IPv4 公网出口查询"
+    else
+        fail "IPv6 NAT 校验接受与公网出口匹配的 AAAA 记录"
     fi
 }
 
@@ -720,7 +766,9 @@ test_network_mode_rejects_invalid_values
 test_interactive_network_mode_menu_writes_to_terminal
 test_renewal_retry_schedule_is_documented_and_persistent
 test_ipv6_dns_validation_uses_local_addresses_without_ipv4_egress_lookup
+test_ipv6_local_address_filter_excludes_ula_addresses
 test_ipv4_dns_validation_accepts_public_nat_address
+test_ipv6_dns_validation_accepts_public_nat_address
 test_dual_stack_dns_requires_matching_a_and_aaaa_records
 test_issue_and_renew_reuse_saved_ipv6_listener_mode
 test_renew_does_not_force_reissue

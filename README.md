@@ -66,7 +66,7 @@ sslcert ssl example.com
 
 ## 工作机制
 
-1. **域名、网络模式与 DNS 预检**：校验域名格式；IPv4 模式要求 A 记录匹配本机 IPv4，IPv6 模式要求 AAAA 记录匹配本机 IPv6，双栈模式要求两者都匹配。本机地址直接从网卡读取，不会把 Cloudflare WARP 等出口 IPv4 当作服务器地址。
+1. **域名、网络模式与 DNS 预检**：校验域名格式；IPv4 模式要求 A 记录匹配本机 IPv4，IPv6 模式要求 AAAA 记录匹配本机 IPv6，双栈模式要求两者都匹配。优先使用网卡上的公网地址；网卡地址不匹配时，只会按当前模式查询同协议的公网出口地址，IPv6 校验绝不会使用 IPv4 或 Cloudflare WARP 的出口地址。
 2. **端口占用检测**：检测当前占用 TCP 80 与 443 端口的具体服务进程。
 3. **安全暂停已确认服务**：仅当受支持的 Web 服务监听 PID 可由 `/proc/<PID>/cgroup` 确认归属实际 systemd 单元时，才会暂停该单元；若 cgroup 明确归属某个正在运行的 Docker 容器，则只暂停该容器；检测到 `docker-proxy` 时仅处理可关联到同端口发布映射的 Docker 容器。无法确认来源的进程不会被强制停止。
 4. **HTTP-01 验证**：启动 `acme.sh --standalone` 监听 80 端口，完成 Let's Encrypt 证书申请与签发。
@@ -116,7 +116,7 @@ w ssl example.com dual
 ```
 
 - `ipv4`：要求域名的 A 记录与本机 IPv4 地址匹配；若网卡只有内网 IPv4，工具会查询 IPv4 公网出口地址以兼容云平台的 NAT 映射，acme.sh 仅监听 IPv4。
-- `ipv6`：要求域名的 AAAA 记录与本机全局 IPv6 地址匹配，acme.sh 仅监听 IPv6。适用于只有原生 IPv6 的 VPS；WARP 的出口 IPv4 不参与判断。
+- `ipv6`：要求域名的 AAAA 记录与本机全局 IPv6 地址匹配，acme.sh 仅监听 IPv6。会忽略 `fc00::/7` 私有 IPv6 地址；若网卡地址不匹配，会仅通过 IPv6 查询公网出口地址后再校验。适用于原生 IPv6、IPv6 隧道或地址映射的 VPS；WARP 的出口 IPv4 不参与判断。
 - `dual`：要求 A 和 AAAA 都与本机地址匹配，acme.sh 保持双栈 standalone 监听。
 
 模式会按域名保存，之后的手动续期与 Cron 自动续期会自动复用。HTTP-01 的实际访问路径由 Let's Encrypt 根据 DNS 解析决定：对应 A 或 AAAA 必须指向本机，且公网 TCP 80 必须可访问。双栈域名的两个地址都应能访问 TCP 80。
