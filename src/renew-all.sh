@@ -12,6 +12,7 @@ LIB_DIR="/usr/local/lib/ssl-certbot"
 # Source all modules
 # shellcheck source=common.sh
 source "${LIB_DIR}/common.sh"
+source "${LIB_DIR}/cloudflare.sh"
 # shellcheck source=port_service.sh
 source "${LIB_DIR}/port_service.sh"
 # shellcheck source=cert.sh

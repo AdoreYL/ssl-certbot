@@ -52,7 +52,7 @@ esac
 info "识别到系统：${ID} ${VERSION_ID:-}（包管理器：${PKG}）"
 
 # ── Source files check ──────────────────────────────────────────────
-for f in common.sh port_service.sh cert.sh cron.sh ssl-certbot.sh w-entry.sh renew-all.sh; do
+for f in common.sh cloudflare.sh port_service.sh cert.sh cron.sh ssl-certbot.sh w-entry.sh renew-all.sh; do
     if [[ ! -f "${SRC_DIR}/${f}" ]]; then
         die "缺少源文件：${SRC_DIR}/${f}"
     fi
@@ -104,7 +104,7 @@ fi
 info "正在将 ssl-certbot 安装到 ${INSTALL_LIB_DIR}..."
 mkdir -p "$INSTALL_LIB_DIR"
 
-for f in common.sh port_service.sh cert.sh cron.sh ssl-certbot.sh renew-all.sh; do
+for f in common.sh cloudflare.sh port_service.sh cert.sh cron.sh ssl-certbot.sh renew-all.sh; do
     cp -f "${SRC_DIR}/${f}" "${INSTALL_LIB_DIR}/${f}"
     chmod 755 "${INSTALL_LIB_DIR}/${f}"
 done
@@ -210,6 +210,10 @@ echo "    ${INSTALL_COMMAND_NAME} ssl list            查看已管理的证书"
 echo "    ${INSTALL_COMMAND_NAME} ssl status          查看证书状态"
 echo "    ${INSTALL_COMMAND_NAME} ssl renew           续期证书"
 echo "    ${INSTALL_COMMAND_NAME} ssl remove <域名>   删除本地证书"
+echo "    ${INSTALL_COMMAND_NAME} ssl <域名> dns <编号> Cloudflare DNS-01 申请"
+echo "    ${INSTALL_COMMAND_NAME} ssl cf-menu        管理 Cloudflare 账号"
+echo "    ${INSTALL_COMMAND_NAME} ssl cf-add <名称>   添加 Cloudflare 账号（Token 隐藏输入）"
+echo "    ${INSTALL_COMMAND_NAME} ssl cf-list         查看 Cloudflare 账号编号"
 echo "    ${INSTALL_COMMAND_NAME} ssl update          更新 ssl-certbot"
 echo "    ${INSTALL_COMMAND_NAME} ssl uninstall       卸载 ssl-certbot"
 echo "    ${INSTALL_COMMAND_NAME} ssl help            查看帮助"
@@ -220,5 +224,6 @@ echo "  命令：${INSTALL_COMMAND_BIN}"
 fi
 echo ""
 echo "  ${C_YELLOW}提示：${C_RESET} 若 acme.sh 尚未安装，将在首次使用时自动安装。"
+echo "  Cloudflare DNS-01 适合 80 端口不可用或需要通配符证书的场景，Token 仅保存在本机。"
 echo "  证书变更不会自动重载 Web 或代理服务。"
 echo ""
