@@ -52,6 +52,14 @@ sslcert ssl example.com
 |------|------|
 | `w ssl` | 打开交互式管理菜单 |
 | `w ssl <domain> [ipv4\|ipv6\|dual]` | 按指定网络模式申请或续期证书；未指定时交互选择 |
+| `w ssl <domain> dns <编号>` | 使用指定 Cloudflare 账号执行 DNS-01 申请或续期 |
+| `w ssl cf-menu` | 打开 Cloudflare 账号管理菜单 |
+| `w ssl cf-add <名称>` | 添加 Cloudflare 账号（Token 隐藏输入，不作为命令参数） |
+| `w ssl cf-list` | 查看账号编号、名称与已绑定域名 |
+| `w ssl cf-test <编号> [域名]` | 测试 Token 是否有效、能否访问该域名所属 Zone |
+| `w ssl cf-update <编号>` | 更换账号 Token，并清除 acme.sh 中的旧凭据 |
+| `w ssl cf-remove <编号>` | 删除账号（仍绑定域名时会被拒绝） |
+| `w ssl cf-rebind <域名> <编号>` | 显式把域名改绑到另一个账号 |
 | `w ssl list` | 列出所有已管理的证书及是否进入续期窗口 |
 | `w ssl status` | 查看指定域名的详细证书状态与端口环境 |
 | `w ssl renew` | 批量手动续期所有证书 |
@@ -66,7 +74,8 @@ sslcert ssl example.com
 
 ## 工作机制
 
-1. **域名、网络模式与 DNS 预检**：校验域名格式；IPv4 模式要求 A 记录匹配本机 IPv4，IPv6 模式要求 AAAA 记录匹配本机 IPv6，双栈模式要求两者都匹配。优先使用网卡上的公网地址；网卡地址不匹配时，只会按当前模式查询同协议的公网出口地址，IPv6 校验绝不会使用 IPv4 或 Cloudflare WARP 的出口地址。
+1. **选择验证方式**：可申请时可选 HTTP-01 或 Cloudflare DNS-01。已绑定 DNS-01 的域名会记住该方式与其账号编号，续期时自动复用，绝不静默换用另一种方式或另一个账号。
+2. **域名、网络模式与 DNS 预检（仅 HTTP-01）**：校验域名格式；IPv4 模式要求 A 记录匹配本机 IPv4，IPv6 模式要求 AAAA 记录匹配本机 IPv6，双栈模式要求两者都匹配。优先使用网卡上的公网地址；网卡地址不匹配时，只会按当前模式查询同协议的公网出口地址，IPv6 校验绝不会使用 IPv4 或 Cloudflare WARP 的出口地址。
 2. **端口占用检测**：检测当前占用 TCP 80 与 443 端口的具体服务进程。
 3. **安全暂停已确认服务**：仅当受支持的 Web 服务监听 PID 可由 `/proc/<PID>/cgroup` 确认归属实际 systemd 单元时，才会暂停该单元；若 cgroup 明确归属某个正在运行的 Docker 容器，则只暂停该容器；检测到 `docker-proxy` 时仅处理可关联到同端口发布映射的 Docker 容器。无法确认来源的进程不会被强制停止。
 4. **HTTP-01 验证**：启动 `acme.sh --standalone` 监听 80 端口，完成 Let's Encrypt 证书申请与签发。
@@ -97,7 +106,7 @@ sslcert ssl example.com
 /etc/letsencrypt/live/hk.example.com/privkey.pem
 ```
 
-各域名独立目录隔离存储，绝不发生覆盖冲突。
+各域名独立目录隔离存储，绝不发生覆盖冲突。通配符证书目录以 `_wildcard_` 前缀命名，详见下方“Cloudflare DNS-01 与通配符证书”。
 
 列表和详情中的到期时间会统一换算为中国标准时间，例如 `2026年12月06日 17:30:50（中国标准时间）`。
 
@@ -123,11 +132,63 @@ w ssl example.com dual
 
 工具不要求配置证书通知邮箱，会以无联系邮箱的 Let’s Encrypt 账户完成注册并依靠自动续期维护证书。若旧版脚本曾写入 `ssl-certbot@localhost`，新版会在运行时自动清除这条无效配置。
 
+## Cloudflare DNS-01 与通配符证书
+
+国内机房常会拦截未备案域名的 80 端口，HTTP-01 无法完成验证；通配符证书也只能用 DNS 验证。这两种场景使用 Cloudflare DNS-01：由 acme.sh 的 `dns_cf` 插件调用 Cloudflare API 写入 `_acme-challenge` TXT 记录完成验证，全程不需要开放 80/443，也不会暂停或恢复任何服务。
+
+### 使用步骤
+
+```bash
+# 1. 添加一个或多个 Cloudflare 账号（Token 隐藏输入，不写入命令历史）
+w ssl cf-add 主账号
+w ssl cf-add 备用账号
+
+# 2. 查看自动分配的固定编号
+w ssl cf-list
+
+# 3. 申请单域名或通配符证书
+w ssl hk.example.com dns 1
+w ssl '*.example.com' dns 1
+
+# 4. 之后直接续期，脚本会自动使用绑定账号
+w ssl renew '*.example.com'
+```
+
+交互式菜单里选择“申请或续期证书”，再选择 `Cloudflare DNS-01`，按提示输入域名和账号编号即可。
+
+### 账号与域名绑定
+
+- 每个 Cloudflare Token 有一个固定编号，编号一旦使用过就不会复用，避免旧绑定指向另一个 Token。
+- 首次申请时必须手动指定编号；申请成功后，域名与编号的对应关系写入本机配置。自动续期直接按绑定取回该账号，不会去猜哪个账号拥有这个域名，也不会在失败时改用别的账号。
+- 需要换账号时使用 `w ssl cf-rebind <域名> <编号>`：先用目标账号验证 Zone 权限，通过后才替换绑定；失败则保留原绑定与原证书。
+- 仍被域名绑定的账号不允许删除，否则会破坏自动续期。
+- 每个输入域名单独签发一张证书，互不影响；某个域名的 Token 权限有问题时，只会导致该域名失败，不会连累其他证书。
+
+### 通配符范围
+
+`*.example.com` 只覆盖同层子域名（例如 `a.example.com`），不包含 `example.com` 本身，也不包含 `a.b.example.com`。根域名与多级子域名请各自申请一张证书。通配符只能通过 DNS-01 申请，HTTP-01 会拒绝 `*` 输入。
+
+证书与元数据目录使用 `_wildcard_` 前缀保存，避免目录名里出现 `*`：
+
+```
+/etc/letsencrypt/live/_wildcard_example.com/fullchain.pem
+/etc/letsencrypt/live/_wildcard_example.com/privkey.pem
+```
+
+### 凭据保存与保密边界
+
+- Token 只保存在本机 `/etc/letsencrypt/ssl-certbot/cloudflare/<编号>/token`，目录权限 `0700`、文件权限 `0600`，属主为 root。
+- Token 不作为命令行参数传递，不回显，不写入菜单输出、工具日志与 GitHub。
+- Cloudflare API 请求（验证 Token 与 Zone）会直接从本机发往 `api.cloudflare.com`，Let's Encrypt 请求发往证书颁发机构；除 DNS-01 的这些调用外，工具不上传任何内容。
+- 每个 DNS 账号使用独立的 acme.sh 配置目录（`cloudflare/<编号>/acme`），账号密钥、CA 状态与签发的证书互不共享；HTTP-01 仍使用原来的 `/root/.acme.sh`，不受影响。
+- 更换 Token 时会同时清除 acme.sh 中持久化的旧凭据，避免某个账号借用另一个账号的身份。
+- 这是明文保存而非加密：root、备份软件以及具备相应权限的本机进程仍可读到原文。自动续期需要在无人值守时取回 Token，因此没有额外密钥管理服务时无法做到真正的静态加密。请使用最小权限 Token（只授权需要的 Zone，Zone - DNS - Edit），并保护好 VPS 与备份。
+
 ## 自动续期机制
 
 安装后会自动注册 Cron 定时任务，每天 `02:30`、`10:30`、`18:30` 检查一次。正常情况下只有每天 `02:30` 执行续期；如果续期失败，脚本会进入重试状态，在后续每隔 8 小时再次尝试，最多连续重试 6 轮。6 轮仍失败后恢复为每天 `02:30` 执行，下一天继续尝试。重试状态保存于 `/etc/letsencrypt/ssl-certbot/renew-retry.state`，实例重启后仍会保留。脚本使用 `openssl x509 -checkend` 判断证书是否进入约 30 天的续期窗口，避免依赖 Alpine BusyBox 与 GNU `date` 的参数差异。
 
-只有存在需要续期的证书时，工具才会暂停已识别且实际占用 TCP 80/443 的服务并执行普通 `acme.sh --renew`；没有需要续期的证书时不会暂停服务。任一证书续期、证书读取或服务恢复失败时，自动任务会以非零状态结束并记录日志并触发 8 小时重试，原有有效证书不会被删除。
+只有存在**需要续期的 HTTP-01 证书**时，工具才会暂停已识别且实际占用 TCP 80/443 的服务并执行普通 `acme.sh --renew`；没有需要续期的证书时不会暂停服务。Cloudflare DNS-01 证书完全不触碰端口：自动续期任务不占用 80 端口，也不会重启任何服务。若同一批里既有 DNS 证书又有 HTTP 证书，而 HTTP 端口预检失败，DNS 证书仍会各自独立续期，整批任务以失败状态结束并触发下一轮 8 小时重试。任一证书续期、证书读取或服务恢复失败时，自动任务会以非零状态结束并记录日志并触发 8 小时重试，原有有效证书不会被删除。
 
 ## 适配服务检测清单
 
@@ -153,16 +214,17 @@ w ssl example.com dual
 - `openssl`
 - `socat`
 - `acme.sh`（自动下载引导）
+- `jq`（仅 Cloudflare DNS-01 使用，缺少时按需自动安装）
 - `cron` / `crond`
 - `ss` / `netstat` / `lsof`（至少具备其一）
 - `flock`（并发进程排他锁）
 
-**无需安装：** Docker、Certbot、Python、Node.js，也无需配置 Cloudflare API Token。
+**无需安装：** Docker、Certbot、Python、Node.js。只有使用 Cloudflare DNS-01 时才需要配置 API Token。
 
 ## 设计边界与说明 (v1)
 
-- 仅支持 HTTP-01 验证（暂不提供 DNS-01 API 接入）
-- 仅支持单域名证书（不支持通配符通配证书与多 SAN 域名合并）
+- 支持 HTTP-01 与 Cloudflare DNS-01 两种验证方式；DNS-01 目前只接入 Cloudflare
+- 每个输入域名单独签发一张证书，不把多个域名合并进一张证书的 SAN；通配符证书通过 DNS-01 申请
 - 不主动侵入修改 Nginx/Caddy/x-ui 等服务的原有配置文件
 - 不自动 reload 或 restart 服务；服务如何加载更新后的证书由管理员自行配置
 - 仅自动暂停可确认归属实际 systemd 单元的受支持监听进程；手工启动或其他无法安全识别的进程会提示手动处理
@@ -197,6 +259,7 @@ ssl-certbot/
   src/
     common.sh          # 基础公共函数库、系统识别、依赖校验、锁与日志
     port_service.sh    # 80/443 端口检测与服务识别、安全暂停与现场恢复
+    cloudflare.sh      # Cloudflare 账号存储、域名绑定与 Zone 权限测试
     cert.sh            # 证书申请、续期、状态查看、列表列出
     cron.sh            # 自动续期定时任务管理
     ssl-certbot.sh     # 业务主入口分发器 (w ssl 命令核心)
