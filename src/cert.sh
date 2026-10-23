@@ -24,7 +24,7 @@ ssl_cert_expiry_from_file() {
     local fullchain="$1"
     local raw_expiry
 
-    raw_expiry=$(openssl x509 -in "$fullchain" -noout -enddate 2>/dev/null | cut -d= -f2)
+    raw_expiry=$(openssl x509 -in "$fullchain" -noout -enddate 2>/dev/null | cut -d= -f2 || true)
     ssl_format_cert_expiry "$raw_expiry"
 }
 
@@ -44,7 +44,7 @@ ssl_acme_listener_args() {
 ssl_issue_cert() {
     local domain="$1"
     local mode="$2"
-    local cert_dir="${SSL_CERT_BASE}/${domain}"
+    local cert_dir="${SSL_CERT_BASE}/$(ssl_cert_slug "$domain")"
     local fullchain="${cert_dir}/fullchain.pem"
     local privkey="${cert_dir}/privkey.pem"
     local -a listener_args=()
@@ -120,11 +120,81 @@ ssl_issue_cert() {
     return 0
 }
 
+# Run acme.sh for one Cloudflare account. --home keeps the official install
+# directory (so dnsapi/dns_cf resolves), while --config-home isolates the
+# account key, CA state, issued certificate and account.conf per account.
+ssl_dns_acme_call() {
+    local id="$1" token home result log_file
+    shift
+    if [[ ! -x "$SSL_ACME_HOME/acme.sh" ]]; then
+        ssl_log ERROR "未找到 acme.sh：$SSL_ACME_HOME/acme.sh。请先完成一次安装或使用 w ssl update。"
+        return 1
+    fi
+    ssl_cf_prepare_acme "$id" || return 1
+    token=$(ssl_cf_token "$id") || return 1
+    home=$(ssl_cf_acme_home "$id")
+    log_file="$home/acme.sh.log"
+    # The environment Token always wins over any persisted value, and the
+    # other Cloudflare credential shapes are cleared so an account cannot be
+    # authenticated with another account's key. Upstream output is hidden and
+    # only sent to the account-restricted 0600 log, because it can contain
+    # provider responses.
+    if ( export CF_Token="$token"; unset CF_Key CF_Email CF_Zone_ID CF_Account_ID;
+         "$SSL_ACME_HOME/acme.sh" --home "$SSL_ACME_HOME" --config-home "$home" \
+             --log "$log_file" --log-level 1 "$@" >>"$log_file" 2>&1 ); then
+        return 0
+    else
+        result=$?
+    fi
+    chmod 600 "$log_file" 2>/dev/null || true
+    [[ "$result" -eq 2 ]] && return 2
+    ssl_log ERROR "Cloudflare DNS 验证失败（acme.sh 退出码：$result）。请查看 $log_file 并检查该账号的 Zone 权限。"
+    return 1
+}
+
+ssl_issue_dns_cert() {
+    local domain="$1" id="$2" result=0
+    local dir="$SSL_CERT_BASE/$(ssl_cert_slug "$domain")"
+    ssl_validate_dns_domain "$domain" && ssl_cf_account_ready "$id" || return 1
+    ssl_cf_test_account "$id" "$domain" || return 1
+    mkdir -p "$dir" && chmod 700 "$dir" 2>/dev/null || return 1
+    ssl_dns_acme_call "$id" --issue --dns dns_cf -d "$domain" --server letsencrypt --keylength 2048 || result=$?
+    if [[ "$result" -ne 0 && "$result" -ne 2 ]]; then return 1; fi
+    if ! ssl_dns_acme_call "$id" --install-cert -d "$domain" \
+        --fullchain-file "$dir/fullchain.pem" --key-file "$dir/privkey.pem"; then
+        ssl_log ERROR "证书可能已签发，但未能安装；不会建立自动续期绑定。"
+        return 1
+    fi
+    [[ -f "$dir/fullchain.pem" && -f "$dir/privkey.pem" ]] || return 1
+    chmod 644 "$dir/fullchain.pem" && chmod 600 "$dir/privkey.pem" || return 1
+    if ! ssl_cf_bind_domain "$domain" "$id"; then
+        ssl_log ERROR "证书已安装，但账号绑定失败；不会报告完整成功。"
+        return 1
+    fi
+    ssl_log INFO "证书已保存：$dir/fullchain.pem；私钥：$dir/privkey.pem"
+}
+
+ssl_renew_dns_cert() {
+    local domain="$1" id="$2" result=0
+    local dir="$SSL_CERT_BASE/$(ssl_cert_slug "$domain")"
+    ssl_validate_dns_domain "$domain" && ssl_cf_account_ready "$id" || return 1
+    [[ $(ssl_cf_account_for_domain "$domain") == "$id" ]] || return 1
+    # acme.sh --renew takes only domain/ecc/server. The validation method
+    # comes from Le_Webroot persisted in this account's own config-home during
+    # --issue, so renewal cannot fall back to standalone HTTP-01.
+    ssl_dns_acme_call "$id" --renew -d "$domain" --server letsencrypt || result=$?
+    if [[ "$result" -ne 0 && "$result" -ne 2 ]]; then return 1; fi
+    ssl_dns_acme_call "$id" --install-cert -d "$domain" \
+        --fullchain-file "$dir/fullchain.pem" --key-file "$dir/privkey.pem" || return 1
+    [[ -f "$dir/fullchain.pem" && -f "$dir/privkey.pem" ]] || return 1
+    chmod 644 "$dir/fullchain.pem" && chmod 600 "$dir/privkey.pem"
+}
+
 # ── Renew certificate ──────────────────────────────────────────────
 ssl_renew_cert() {
     local domain="$1"
     local mode
-    local cert_dir="${SSL_CERT_BASE}/${domain}"
+    local cert_dir="${SSL_CERT_BASE}/$(ssl_cert_slug "$domain")"
     local fullchain="${cert_dir}/fullchain.pem"
     local privkey="${cert_dir}/privkey.pem"
     local -a listener_args=()
@@ -202,11 +272,11 @@ ssl_cert_needs_renewal_file() {
 # Renew managed certificates that are within the renewal window. The caller
 # must hold the process lock before invoking this function.
 ssl_renew_managed_certificates() {
-    local -a domains=()
+    local -a domains=() http_domains=()
     local renewed=0
     local skipped=0
     local failed=0
-    local cert_dir domain fullchain check_result
+    local cert_dir domain fullchain check_result method id
 
     if [[ ! -d "$SSL_CERT_BASE" ]]; then
         ssl_log INFO "未找到证书目录，无需续期。"
@@ -215,7 +285,7 @@ ssl_renew_managed_certificates() {
 
     for cert_dir in "$SSL_CERT_BASE"/*/; do
         [[ ! -d "$cert_dir" ]] && continue
-        domain=$(basename "$cert_dir")
+        domain=$(ssl_slug_to_domain "$(basename "$cert_dir")")
         fullchain="${cert_dir}fullchain.pem"
         [[ ! -f "$fullchain" ]] && continue
 
@@ -243,25 +313,40 @@ ssl_renew_managed_certificates() {
     fi
 
     ssl_log INFO "需要续期的证书：${domains[*]}"
-    if ! ssl_pause_port_services; then
-        ssl_log ERROR "无法安全释放续期所需端口。"
-        ssl_log ERROR "续期汇总：成功=0，跳过=$skipped，失败=${#domains[@]}"
-        return 1
-    fi
-
     for domain in "${domains[@]}"; do
-        if ssl_renew_cert "$domain"; then
-            renewed=$((renewed + 1))
-            ssl_log INFO "已续期：$domain"
+        method=$(ssl_validation_method "$domain") || method=invalid
+        if [[ "$method" == dns ]]; then
+            id=$(ssl_cf_account_for_domain "$domain") || id=
+            if [[ -n "$id" ]] && ssl_renew_dns_cert "$domain" "$id"; then
+                renewed=$((renewed + 1))
+            else
+                failed=$((failed + 1))
+                ssl_log ERROR "续期失败：$domain"
+            fi
+        elif [[ "$method" == http ]]; then
+            http_domains+=("$domain")
         else
             failed=$((failed + 1))
-            ssl_log ERROR "续期失败：$domain"
+            ssl_log ERROR "续期失败：$domain（验证方式配置无效）"
         fi
     done
-
-    if ! ssl_restore_services; then
-        failed=$((failed + 1))
-        ssl_log ERROR "一个或多个已暂停服务未能恢复。"
+    if [[ ${#http_domains[@]} -gt 0 ]]; then
+        if ssl_pause_port_services; then
+            for domain in "${http_domains[@]}"; do
+                if ssl_renew_cert "$domain"; then
+                    renewed=$((renewed + 1))
+                else
+                    failed=$((failed + 1))
+                fi
+            done
+        else
+            failed=$((failed + ${#http_domains[@]}))
+            ssl_log ERROR "HTTP 端口预检失败，但 DNS 证书已独立处理。"
+        fi
+        if ! ssl_restore_services; then
+            failed=$((failed + 1))
+            ssl_log ERROR "一个或多个已暂停服务未能恢复。"
+        fi
     fi
 
     ssl_log INFO "续期汇总：成功=$renewed，跳过=$skipped，失败=$failed"
@@ -286,7 +371,7 @@ ssl_list_certs() {
     for cert_dir in "$SSL_CERT_BASE"/*/; do
         [[ ! -d "$cert_dir" ]] && continue
         local domain
-        domain=$(basename "$cert_dir")
+        domain=$(ssl_slug_to_domain "$(basename "$cert_dir")")
         local fullchain="${cert_dir}fullchain.pem"
         local privkey="${cert_dir}privkey.pem"
 
@@ -297,7 +382,7 @@ ssl_list_certs() {
         found=1
         local expiry days_left issuer
         expiry=$(ssl_cert_expiry_from_file "$fullchain")
-        issuer=$(openssl x509 -in "$fullchain" -noout -issuer 2>/dev/null | sed 's/issuer=//')
+        issuer=$(openssl x509 -in "$fullchain" -noout -issuer 2>/dev/null | sed 's/issuer=//' || true)
 
         # openssl -checkend is portable across GNU and BusyBox systems.
         local renewal_state=0
@@ -327,7 +412,7 @@ ssl_list_certs() {
         echo "    证书链：$fullchain"
         echo "    私钥：$privkey"
         echo "    到期时间：${expiry:-未知}"
-        echo "    网络模式：$(ssl_load_network_mode "$domain")"
+        ssl_print_validation_mode "$domain"
         echo "    剩余有效期：${status_color}${days_left}${C_RESET}"
         echo "    签发者：${issuer:-未知}"
     done
@@ -351,7 +436,7 @@ ssl_cert_status() {
     fi
 
     # Show specific domain
-    local cert_dir="${SSL_CERT_BASE}/${domain}"
+    local cert_dir="${SSL_CERT_BASE}/$(ssl_cert_slug "$domain")"
     local fullchain="${cert_dir}/fullchain.pem"
 
     if [[ ! -f "$fullchain" ]]; then
@@ -363,14 +448,14 @@ ssl_cert_status() {
     echo "${C_BOLD}证书状态：$domain${C_RESET}"
     echo "────────────────────────────────────────"
     local subject issuer serial expiry
-    subject=$(openssl x509 -in "$fullchain" -noout -subject 2>/dev/null | sed 's/^subject=//')
-    issuer=$(openssl x509 -in "$fullchain" -noout -issuer 2>/dev/null | sed 's/^issuer=//')
-    serial=$(openssl x509 -in "$fullchain" -noout -serial 2>/dev/null | sed 's/^serial=//')
+    subject=$(openssl x509 -in "$fullchain" -noout -subject 2>/dev/null | sed 's/^subject=//' || true)
+    issuer=$(openssl x509 -in "$fullchain" -noout -issuer 2>/dev/null | sed 's/^issuer=//' || true)
+    serial=$(openssl x509 -in "$fullchain" -noout -serial 2>/dev/null | sed 's/^serial=//' || true)
     expiry=$(ssl_cert_expiry_from_file "$fullchain")
     echo "  主题：${subject:-未知}"
     echo "  签发者：${issuer:-未知}"
     echo "  到期时间：${expiry:-未知}"
-    echo "  网络模式：$(ssl_load_network_mode "$domain")"
+    ssl_print_validation_mode "$domain" '  '
     echo "  序列号：${serial:-未知}"
     echo ""
 
@@ -388,14 +473,30 @@ ssl_cert_status() {
     echo ""
 }
 
+# Print the validation method for a domain. $2 selects the indent so the
+# list page (four spaces) and the status page (two spaces) keep alignment.
+ssl_print_validation_mode() {
+    local domain="$1" indent="${2-    }" method id name
+    method=$(ssl_validation_method "$domain") || { echo "${indent}验证方式：配置无效"; return 1; }
+    if [[ "$method" == dns ]]; then
+        id=$(ssl_cf_account_for_domain "$domain") || return 1
+        name='未知账号'
+        if ssl_cf_account_ready "$id"; then name=$(<"$(ssl_cf_account_dir "$id")/name"); fi
+        echo "${indent}验证方式：Cloudflare DNS-01（账号 ${id:-未绑定}：$name）"
+    else
+        echo "${indent}验证方式：HTTP-01"
+        echo "${indent}网络模式：$(ssl_load_network_mode "$domain")"
+    fi
+}
+
 # ── Remove certificate ─────────────────────────────────────────────
 ssl_remove_cert() {
     local domain="$1"
     local confirmed="${2:-}"
-    local cert_dir="${SSL_CERT_BASE}/${domain}"
+    local cert_dir="${SSL_CERT_BASE}/$(ssl_cert_slug "$domain")"
     local acme_bin="${SSL_ACME_BIN:-${SSL_ACME_HOME}/acme.sh}"
 
-    if ! ssl_validate_domain "$domain"; then
+    if ! ssl_validate_dns_domain "$domain"; then
         return 1
     fi
 
@@ -409,10 +510,21 @@ ssl_remove_cert() {
         return 1
     fi
 
-    if [[ -x "$acme_bin" ]]; then
-        if ! "$acme_bin" --remove -d "$domain"; then
-            ssl_log WARN "未能清除 acme.sh 中的证书记录，将继续删除本地证书文件。"
+    local method id
+    method=$(ssl_validation_method "$domain") || return 1
+    # A failed acme.sh removal must not strand the deployed certificate files:
+    # warn, keep the local cleanup moving, and let the admin retry --remove.
+    if [[ "$method" == dns ]]; then
+        id=$(ssl_cf_account_for_domain "$domain") || return 1
+        if [[ -z "$id" ]]; then
+            ssl_log ERROR "$domain 标记为 DNS-01 证书，但没有可用账号绑定；请先用 w ssl cf-rebind 指定账号。"
+            return 1
         fi
+        ssl_dns_acme_call "$id" --remove -d "$domain" || \
+            ssl_log WARN "未能清除账号 $id 下 $domain 的 acme.sh 证书记录，将继续删除本地证书文件。"
+    elif [[ -x "$acme_bin" ]]; then
+        "$acme_bin" --remove -d "$domain" || \
+            ssl_log WARN "未能清除 acme.sh 中的证书记录，将继续删除本地证书文件。"
     fi
 
     rm -rf "$cert_dir"
