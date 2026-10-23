@@ -300,6 +300,40 @@ ssl_validate_domain() {
     return 0
 }
 
+ssl_validate_dns_domain() {
+    local domain="$1"
+    [[ "$domain" != *'/'* && "$domain" != *'\\'* && "$domain" != *'..'* && "$domain" != *'.' ]] || return 1
+    if [[ "$domain" == \*.* && "${domain#\*.}" != *'*'* ]]; then
+        ssl_validate_domain "${domain#\*.}"
+        return
+    fi
+    [[ "$domain" != *'*'* ]] && ssl_validate_domain "$domain"
+}
+
+# ── Filesystem-safe domain names ───────────────────────────────────
+# A wildcard identifier starts with "*.", which is awkward inside a path.
+# Certificates and their metadata use a deterministic slug instead; the real
+# domain is recovered from the slug before any acme.sh call. Domain labels
+# cannot start with an underscore, so the prefix cannot collide with a real
+# domain name.
+ssl_cert_slug() {
+    local domain="$1"
+    if [[ "$domain" == \*.* ]]; then
+        printf '%s\n' "_wildcard_${domain#\*.}"
+    else
+        printf '%s\n' "$domain"
+    fi
+}
+
+ssl_slug_to_domain() {
+    local slug="$1"
+    if [[ "$slug" == _wildcard_* ]]; then
+        printf '%s\n' "*.${slug#_wildcard_}"
+    else
+        printf '%s\n' "$slug"
+    fi
+}
+
 # ── Certificate network-mode state ─────────────────────────────────
 ssl_validate_network_mode() {
     case "$1" in
@@ -313,7 +347,7 @@ ssl_validate_network_mode() {
 
 ssl_network_mode_file() {
     local domain="$1"
-    printf '%s/%s.conf\n' "$SSL_CERTBOT_CONFIG_DIR" "$domain"
+    printf '%s/%s.conf\n' "$SSL_CERTBOT_CONFIG_DIR" "$(ssl_cert_slug "$domain")"
 }
 
 ssl_save_network_mode() {
@@ -323,8 +357,13 @@ ssl_save_network_mode() {
 
     ssl_validate_network_mode "$mode" || return 1
     mode_file=$(ssl_network_mode_file "$domain")
+    # A file that already carries a DNS-01 binding belongs to the DNS flow;
+    # never rewrite it here or the account binding would be lost.
+    if [[ -f "$mode_file" ]] && grep -q '^SSL_CERTBOT_METHOD=dns$' "$mode_file"; then
+        return 0
+    fi
     mkdir -p "$SSL_CERTBOT_CONFIG_DIR"
-    chmod 700 "$SSL_CERTBOT_CONFIG_DIR"
+    chmod 700 "$SSL_CERTBOT_CONFIG_DIR" 2>/dev/null || true
     printf 'SSL_CERTBOT_NETWORK_MODE=%s\n' "$mode" > "$mode_file"
     chmod 600 "$mode_file"
 }
@@ -334,7 +373,7 @@ ssl_load_network_mode() {
     local mode_file mode=""
     mode_file=$(ssl_network_mode_file "$domain")
 
-    if [[ -r "$mode_file" ]]; then
+    if [[ -r "$mode_file" ]] && ! grep -q '^SSL_CERTBOT_METHOD=dns$' "$mode_file"; then
         mode=$(sed -n 's/^SSL_CERTBOT_NETWORK_MODE=//p' "$mode_file" | head -n 1)
     fi
     if ssl_validate_network_mode "$mode" 2>/dev/null; then
