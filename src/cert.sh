@@ -608,8 +608,14 @@ ssl_remove_cert() {
             ssl_log WARN "未能清除 acme.sh 中的证书记录，将继续删除本地证书文件。"
     fi
 
-    rm -rf "$cert_dir"
-    ssl_remove_network_mode "$domain"
+    if ! rm -rf -- "$cert_dir"; then
+        ssl_log ERROR "无法删除 $domain 的证书目录，已保留域名配置。"
+        return 1
+    fi
+    if ! ssl_remove_network_mode "$domain"; then
+        ssl_log ERROR "$domain 的证书文件已删除，但域名配置清理失败。"
+        return 1
+    fi
     ssl_log INFO "已删除 $domain 的本地证书文件。"
     ssl_log INFO "此操作不会向证书颁发机构撤销已签发的证书。"
 }

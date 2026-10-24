@@ -28,7 +28,7 @@ case "$subcmd_lower" in
         echo "    ${command_name} ssl list            查看证书列表"
         echo "    ${command_name} ssl status          查看证书状态"
         echo "    ${command_name} ssl renew           续期证书"
-        echo "    ${command_name} ssl remove <域名>  删除证书"
+        echo "    ${command_name} ssl remove [域名]  删除证书；省略域名可多选或 all 全选"
         echo "    ${command_name} ssl <域名> dns <编号> 使用 Cloudflare DNS-01 申请"
         echo "    ${command_name} ssl cf-menu         管理 Cloudflare 账号"
         echo "    ${command_name} ssl cf-add <名称>    添加 Cloudflare 账号"

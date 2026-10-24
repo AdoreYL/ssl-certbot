@@ -1516,8 +1516,8 @@ test_ssl_menu_includes_update_and_uninstall_actions() {
     local ssl_script
     ssl_script=$(<"$PROJECT_ROOT/src/ssl-certbot.sh")
 
-    assert_contains "$ssl_script" "7. 更新脚本" "交互菜单提供更新脚本选项"
-    assert_contains "$ssl_script" "8. 卸载 ssl-certbot" "交互菜单提供卸载选项"
+    assert_contains "$ssl_script" "6. 更新脚本" "交互菜单提供更新脚本选项"
+    assert_contains "$ssl_script" "7. 卸载 ssl-certbot" "交互菜单提供卸载选项"
     assert_contains "$ssl_script" "update)" "命令行支持更新脚本子命令"
 }
 
@@ -1548,6 +1548,11 @@ test_readme_documents_letsencrypt_live_path_and_network_modes() {
 }
 
 test_cf_account_state_and_binding
+if bash "$PROJECT_ROOT/tests/test_certificate_menu.sh"; then
+    pass '证书多选删除与合并菜单回归'
+else
+    fail '证书多选删除与合并菜单回归'
+fi
 if bash "$PROJECT_ROOT/tests/test_dns_deployment.sh"; then
     pass 'DNS 部署失败保护与改绑锁回归'
 else

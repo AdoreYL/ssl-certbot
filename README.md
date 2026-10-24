@@ -61,10 +61,11 @@ sslcert ssl example.com
 | `w ssl cf-remove <编号>` | 删除账号（仍绑定域名时会被拒绝） |
 | `w ssl cf-rebind <域名> <编号>` | 显式把域名改绑到另一个账号 |
 | `w ssl list` | 列出所有已管理的证书及是否进入续期窗口 |
-| `w ssl status` | 查看指定域名的详细证书状态与端口环境 |
+| `w ssl status [域名]` | 不指定域名时显示全部证书与自动续期状态；指定域名时显示详细信息 |
 | `w ssl renew` | 批量手动续期所有证书 |
 | `w ssl renew <domain>` | 手动续期指定域名的证书 |
 | `w ssl remove <domain>` | 删除本地证书文件及 acme.sh 记录（需输入 `yes` 确认） |
+| `w ssl remove` | 按编号多选或 `all` 全选删除，展示清单后统一确认 |
 | `w ssl update` | 更新 ssl-certbot 脚本，保留证书与自动续期任务 |
 | `w ssl uninstall` | 卸载 ssl-certbot（保留证书、acme.sh 和日志） |
 | `w ssl logs` | 查看工具操作与续期日志 |
@@ -110,7 +111,11 @@ sslcert ssl example.com
 
 列表和详情中的到期时间会统一换算为中国标准时间，例如 `2026年12月06日 17:30:50（中国标准时间）`。
 
-删除证书可使用 `w ssl remove <domain>`，或在交互菜单中选择“删除证书”。该操作会删除 `/etc/letsencrypt/live/<domain>/`、对应的网络模式配置与 acme.sh 本地记录，但不会向 Let's Encrypt 撤销已经签发的证书。
+删除单张证书可使用 `w ssl remove <domain>`。运行 `w ssl remove` 或在交互菜单中选择“删除证书（支持多选）”，会显示证书编号：输入 `1 3` 多选、`all` 全选，输入 `0` 或直接回车取消。确认清单会列出所有选中的域名和路径，输入 `yes` 后才执行删除；重复编号只处理一次，非法编号会取消整批操作。单项失败不影响其他已选项，最后显示成功和失败数量。
+
+该操作会删除所选证书的 `/etc/letsencrypt/live/<domain>/`、对应的域名配置与 acme.sh 本地记录，不会向 Let's Encrypt 撤销已签发的证书，也不会删除共享的 Cloudflare 账号。使用这些证书的服务可能在重新加载时失败，请确认不再需要后再删除。
+
+交互菜单中的“查看证书与续期状态”统一显示证书列表、Cron 服务和自动续期任务，查看完成后返回主菜单；查看日志、帮助后也返回主菜单。原有 `w ssl list`、`w ssl status [域名]` 命令继续可用。
 
 旧版工具写入 `/root/cert/<domain>/` 的证书会在后续运行时自动迁移到新目录；如果新目录已存在同名证书文件，则不会覆盖。
 

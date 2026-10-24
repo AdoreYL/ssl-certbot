@@ -37,22 +37,23 @@ trap _ssl_cleanup EXIT INT TERM HUP
 
 # ── Interactive menu ────────────────────────────────────────────────
 ssl_interactive_menu() {
+    local choice domain
+    while true; do
     echo ""
     echo "${C_BOLD}${C_CYAN}SSL 证书管理${C_RESET}"
     echo "────────────────────────────────────────"
     echo ""
     echo "  1. 申请或续期证书"
-    echo "  2. 查看证书列表"
-    echo "  3. 查看证书状态"
-    echo "  4. 查看运行日志"
-    echo "  5. 查看帮助"
-    echo "  6. 删除证书"
-    echo "  7. 更新脚本"
-    echo "  8. 卸载 ssl-certbot"
-    echo "  9. Cloudflare 账号管理"
+    echo "  2. 查看证书与续期状态"
+    echo "  3. 查看运行日志"
+    echo "  4. 查看帮助"
+    echo "  5. 删除证书（支持多选）"
+    echo "  6. 更新脚本"
+    echo "  7. 卸载 ssl-certbot"
+    echo "  8. Cloudflare 账号管理"
     echo "  0. 退出"
     echo ""
-    read -rp "  请选择 [0-9]: " choice
+    read -rp "  请选择 [0-8]: " choice || return 0
 
     case "$choice" in
         1)
@@ -74,17 +75,18 @@ ssl_interactive_menu() {
             fi
             ssl_cmd_apply "$domain"
             ;;
-        2) ssl_list_certs ;;
-        3) ssl_cert_status ;;
-        4) ssl_cmd_logs ;;
-        5) ssl_cmd_help ;;
-        6) ssl_cmd_remove ;;
-        7) ssl_cmd_update ;;
-        8) ssl_cmd_uninstall ;;
-        9) ssl_cf_menu ;;
-        0) exit 0 ;;
-        *) ssl_log ERROR "无效的选项。" ;;
+        2) ssl_cert_status || ssl_log ERROR "无法完整读取证书与续期状态。"; continue ;;
+        3) ssl_cmd_logs || ssl_log ERROR "无法读取日志。"; continue ;;
+        4) ssl_cmd_help; continue ;;
+        5) ssl_cmd_remove ;;
+        6) ssl_cmd_update ;;
+        7) ssl_cmd_uninstall ;;
+        8) ssl_cf_menu ;;
+        0) return 0 ;;
+        *) ssl_log ERROR "无效的选项。"; continue ;;
     esac
+    return
+    done
 }
 
 # ── Cloudflare account management ───────────────────────────────────
@@ -244,23 +246,78 @@ ssl_cf_menu() {
 
 # ── Command: remove ────────────────────────────────────────────────
 ssl_cmd_remove() {
-    local domain="${1:-}"
-    local confirm
-
-    if [[ -z "$domain" ]]; then
-        read -rp "  请输入要删除证书的域名：" domain
+    local domain="${1:-}" confirm dir selection item index count
+    local -a available=() selected=() indices=()
+    local -A seen=()
+    local removed=0 failed=0
+    if [[ -n "$domain" ]]; then
+        ssl_validate_dns_domain "$domain" || return 1
     fi
-    if ! ssl_validate_dns_domain "$domain"; then
-        return 1
+    ssl_acquire_lock || return 1
+    if [[ -n "$domain" ]]; then
+        selected+=("$domain")
+    else
+        echo ""
+        echo "  可删除的证书："
+        for dir in "$SSL_CERT_BASE"/*/; do
+            [[ -d "$dir" && ! -L "${dir%/}" && -f "${dir}fullchain.pem" ]] || continue
+            domain=$(ssl_slug_to_domain "$(basename "$dir")")
+            ssl_validate_dns_domain "$domain" >/dev/null 2>&1 || continue
+            available+=("$domain")
+            printf '  %s. %s\n' "${#available[@]}" "$domain"
+        done
+        count=${#available[@]}
+        if [[ "$count" == 0 ]]; then
+            ssl_log INFO "未找到可删除的证书。"
+            return 0
+        fi
+        read -rp "  输入编号（空格分隔，如 1 3），all 全选，0 取消：" selection || return 1
+        [[ -n "$selection" && "$selection" != 0 ]] || return 0
+        if [[ "$selection" == all ]]; then
+            selected=("${available[@]}")
+        else
+            read -ra indices <<< "$selection"
+            for item in "${indices[@]}"; do
+                if [[ ! "$item" =~ ^[1-9][0-9]*$ || ${#item} -gt ${#count} ]]; then
+                    ssl_log ERROR "无效的证书编号：$item。未删除任何证书。"
+                    return 1
+                fi
+                index=$((10#$item))
+                if (( index > count )); then
+                    ssl_log ERROR "证书编号超出范围：$item。未删除任何证书。"
+                    return 1
+                fi
+                [[ -z "${seen[$index]:-}" ]] || continue
+                seen[$index]=1
+                selected+=("${available[index-1]}")
+            done
+        fi
+        [[ ${#selected[@]} -gt 0 ]] || return 0
     fi
 
     echo ""
     echo "${C_YELLOW}${C_BOLD}警告：${C_RESET} 将删除以下本地证书文件："
-    echo "  ${SSL_CERT_BASE}/$(ssl_cert_slug "$domain")/"
+    for domain in "${selected[@]}"; do
+        echo "  $domain：${SSL_CERT_BASE}/$(ssl_cert_slug "$domain")/"
+    done
     echo "  同时清除 acme.sh 的本地证书记录。"
     echo "  此操作不会向证书颁发机构撤销已签发的证书。"
-    read -rp "  输入 yes 确认删除：" confirm
-    ssl_remove_cert "$domain" "$confirm"
+    echo "  不会删除共享的 Cloudflare 账号；使用这些证书的服务可能因此无法重新加载。"
+    read -rp "  输入 yes 确认删除：" confirm || return 1
+    if [[ "$confirm" != yes ]]; then
+        ssl_log INFO "已取消删除。"
+        return 0
+    fi
+    for domain in "${selected[@]}"; do
+        if ssl_remove_cert "$domain" yes; then
+            removed=$((removed + 1))
+        else
+            failed=$((failed + 1))
+            ssl_log ERROR "删除失败：$domain"
+        fi
+    done
+    ssl_log INFO "删除汇总：成功=$removed，失败=$failed"
+    [[ "$failed" == 0 ]]
 }
 
 # ── Command: uninstall ─────────────────────────────────────────────
@@ -567,7 +624,7 @@ ssl_cmd_help() {
     echo "    w ssl list               列出已管理的证书"
     echo "    w ssl status [域名]      查看证书状态"
     echo "    w ssl renew [域名]       手动续期证书"
-    echo "    w ssl remove <域名>      删除本地证书与 acme.sh 记录"
+    echo "    w ssl remove [域名]      删除指定证书；省略域名可编号多选或 all 全选"
     echo "    w ssl cf-menu            打开 Cloudflare 账号管理菜单"
     echo "    w ssl cf-add <名称>       添加 Cloudflare 账号（Token 隐藏输入）"
     echo "    w ssl cf-list              查看 Cloudflare 账号编号与名称"
