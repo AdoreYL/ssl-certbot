@@ -272,23 +272,33 @@ ssl_validation_method() {
 }
 
 ssl_cf_bind_domain() {
-    local domain="$1" id="$2" file existing
+    local domain="$1" id="$2" force="${3:-}" file existing
     ssl_validate_dns_domain "$domain" && ssl_cf_account_ready "$id" || return 1
     file=$(ssl_network_mode_file "$domain")
     [[ ! -e "$file" && ! -L "$file" ]] || {
         ssl_cf_private_file "$file" || return 1
-        existing=$(ssl_cf_account_for_domain "$domain") || return 1
-        [[ -z "$existing" || "$existing" == "$id" ]] || return 1
+        # An existing config file that still describes HTTP-01 must not be
+        # converted by binding; the domain has no DNS-01 acme state yet.
         [[ "$(ssl_validation_method "$domain")" == dns ]] || return 1
+        existing=$(ssl_cf_account_for_domain "$domain") || return 1
+        # Switching to a different account is only allowed through an explicit
+        # rebind (force), never by re-running the apply command.
+        [[ "$force" == force || -z "$existing" || "$existing" == "$id" ]] || return 1
     }
     ssl_cf_write "$file" "$(printf 'SSL_CERTBOT_METHOD=dns\nSSL_CERTBOT_CF_ACCOUNT=%s' "$id")"
 }
 
 ssl_cf_rebind_domain() {
     local domain="$1" id="$2"
-    [[ $(ssl_validation_method "$domain") == dns ]] || return 1
-    ssl_cf_account_ready "$id" && ssl_cf_test_account "$id" "$domain" || return 1
-    ssl_cf_write "$(ssl_network_mode_file "$domain")" "$(printf 'SSL_CERTBOT_METHOD=dns\nSSL_CERTBOT_CF_ACCOUNT=%s' "$id")"
+    # Only an existing DNS-01 certificate can be rebound; HTTP certs use the
+    # separate apply flow.
+    [[ "$(ssl_validation_method "$domain")" == dns ]] || { ssl_log ERROR "$domain 不是 DNS-01 证书，无需改绑。"; return 1; }
+    ssl_cf_account_ready "$id" || { ssl_log ERROR "Cloudflare 账号 $id 不存在或权限不安全。"; return 1; }
+    ssl_cf_test_account "$id" "$domain" || return 1
+    # Reissuing through the target account is mandatory: its acme config-home
+    # has no record of this domain yet, so a bare re-bind would leave every
+    # future auto-renewal failing until the certificate expires.
+    ssl_issue_dns_cert "$domain" "$id" force
 }
 
 ssl_cf_bound_domains_for_account() {

@@ -827,7 +827,7 @@ for arg in "$@"; do
 done
 if [[ -n "$fullchain" ]]; then
     mkdir -p "${fullchain%/*}"
-    printf cert > "$fullchain"
+    printf 'cert-%s' "$(wc -l < "$ACME_ARGS_FILE")" > "$fullchain"
     printf key > "${fullchain%fullchain.pem}privkey.pem"
 fi
 exit 0
@@ -872,6 +872,32 @@ FAKEACME
         assert_not_contains "$conf" "stale-secret" "换票后不残留 acme.sh 持久化的旧 Token"
     else
         fail "DNS 签发按账号隔离 acme 状态"
+    fi
+}
+
+test_dns_acme_rejects_unsafe_log_before_execution() {
+    local root="$TEST_TMP/cf-unsafe-log"
+    mkdir -p "$root/install" "$root/state"
+    printf '#!/usr/bin/env bash\nprintf called > "$ACME_CALLED"\n' > "$root/install/acme.sh"
+    chmod +x "$root/install/acme.sh"
+    printf 'keep-existing-log\n' > "$root/state/acme.sh.log"
+    if (
+        source "$PROJECT_ROOT/src/cert.sh"
+        SSL_ACME_HOME="$root/install"
+        export ACME_CALLED="$root/called"
+        ssl_cf_prepare_acme() { :; }
+        ssl_cf_token() { printf test-token; }
+        ssl_cf_acme_home() { printf '%s' "$root/state"; }
+        # Model the state module rejecting an existing unsafe log on Linux.
+        ssl_cf_private_file() { return 1; }
+        ssl_log() { :; }
+        if ssl_dns_acme_call 1 --renew -d example.com; then exit 1; fi
+        [[ ! -e "$ACME_CALLED" ]] || exit 1
+        [[ $(cat "$root/state/acme.sh.log") == keep-existing-log ]] || exit 1
+    ); then
+        pass "DNS 调用在执行 acme.sh 前拒绝不安全日志且保留原内容"
+    else
+        fail "DNS 调用在执行 acme.sh 前拒绝不安全日志且保留原内容"
     fi
 }
 
@@ -1055,8 +1081,14 @@ test_dns_renewal_passes_dns_hook_to_acme() {
     for arg in "$@"; do printf ' %s' "$arg"; done
     printf '\n'
 } >> "$ACME_ARGS_FILE"
+prev=''
+for arg in "$@"; do
+    if [[ "$prev" == --fullchain-file ]]; then printf renewed-cert > "$arg"; fi
+    prev="$arg"
+done
 exit 0
 FAKEACME
+    chmod +x "$root/acme-install/acme.sh"
     printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$root/acme-install/dnsapi/dns_cf.sh"
     if output=$(
         SSL_CERTBOT_CONFIG_DIR="$root/config"
@@ -1244,6 +1276,146 @@ test_jq_is_only_ensured_for_dns_paths() {
     assert_contains "$installer" "ssl cf-menu" "安装完成提示包含账号管理入口"
 }
 
+test_rebind_reissues_through_target_account() {
+    local root="$TEST_TMP/cf-rebind" output calls issue_rc
+    mkdir -p "$root/acme-install/dnsapi" "$root/live/api.example.com"
+    # Fake acme.sh: records argv; --issue writes a NEW cert generation into
+    # its own config-home store; --install-cert copies that store out. A renew
+    # with no prior --issue in that home produces no new content.
+    cat > "$root/acme-install/acme.sh" <<'FAKEACME'
+#!/usr/bin/env bash
+{ printf 'CALL'; for a in "$@"; do printf ' %s' "$a"; done; printf '\n'; } >> "$ACME_ARGS_FILE"
+home='' fullchain='' prev=''
+for a in "$@"; do
+    [ -z "$home" ] && case "$a" in */acme) home="$a";; esac
+    [ "$prev" = "--fullchain-file" ] && fullchain="$a"
+    prev="$a"
+done
+case "$*" in
+    *--issue*) gen=$(( $(cat "$home/gen" 2>/dev/null || echo 0) + 1 )); printf '%s' "$gen" > "$home/gen"; printf 'gen-%s' "$gen" > "$home/cert-store" ;;
+    *--install-cert*) if [[ -n "$fullchain" && -f "$home/cert-store" ]]; then mkdir -p "$(dirname "$fullchain")"; cp "$home/cert-store" "$fullchain"; printf key > "${fullchain%fullchain.pem}privkey.pem"; else exit 3; fi ;;
+esac
+exit 0
+FAKEACME
+    chmod +x "$root/acme-install/acme.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$root/acme-install/dnsapi/dns_cf.sh"
+    if output=$(
+        SSL_CERTBOT_CONFIG_DIR="$root/config"
+        SSL_CERT_BASE="$root/live"
+        SSL_ACME_HOME="$root/acme-install"
+        export ACME_ARGS_FILE="$root/acme.args"
+        : > "$root/acme.args"
+        SSL_CERTBOT_NO_MAIN=1
+        source "$PROJECT_ROOT/src/ssl-certbot.sh" >/dev/null 2>&1
+        exec 2>&1
+        trap - EXIT INT TERM HUP
+        ssl_ensure_acme() { :; }
+        ssl_cf_test_account() { :; }
+        ssl_install_cron_job() { :; }
+        ssl_acquire_lock() { :; }
+        ssl_cf_add_account main 'tok.aaa111' >/dev/null || exit 1
+        ssl_cf_add_account backup 'tok.bbb222' >/dev/null || exit 1
+        ssl_issue_dns_cert api.example.com 1 || exit 1
+        : > "$root/acme.args"
+        # Rebind to account 2: must reissue under account 2 config-home.
+        ssl_cf_rebind_domain api.example.com 2 || exit 1
+        [[ $(ssl_cf_account_for_domain api.example.com) == 2 ]] || exit 1
+    ); then
+        calls=$(<"$root/acme.args")
+        assert_contains "$calls" "--issue --dns dns_cf -d api.example.com" "改绑通过目标账号重新签发"
+        assert_contains "$calls" "--config-home $root/config/cloudflare/2/acme" "改绑后的签发使用目标账号的 acme 状态"
+        assert_contains "$(cat "$root/live/api.example.com/fullchain.pem")" "gen-" "改绑后部署的是新签发证书"
+        assert_not_contains "$output" "tok." "改绑输出不泄漏 Token"
+    else
+        fail "改绑通过目标账号重新签发"
+    fi
+
+    # Failure path: issuing for the target account fails, so the original
+    # binding must survive untouched.
+    mkdir -p "$root/empty-acme/dnsapi"
+    printf '#!/usr/bin/env bash\nexit 7\n' > "$root/empty-acme/acme.sh"
+    chmod +x "$root/empty-acme/acme.sh"
+    if output=$(
+        SSL_CERTBOT_CONFIG_DIR="$root/config"
+        SSL_CERT_BASE="$root/live"
+        SSL_ACME_HOME="$root/empty-acme"
+        export ACME_ARGS_FILE="$root/acme2.args"
+        : > "$root/acme2.args"
+        SSL_CERTBOT_NO_MAIN=1
+        source "$PROJECT_ROOT/src/ssl-certbot.sh" >/dev/null 2>&1
+        exec 2>&1
+        trap - EXIT INT TERM HUP
+        ssl_ensure_acme() { :; }
+        ssl_cf_test_account() { :; }
+        # current binding is account 2 from the success half
+        ! ssl_cf_rebind_domain api.example.com 1 || exit 1
+        [[ $(ssl_cf_account_for_domain api.example.com) == 2 ]] || exit 1
+    ); then
+        pass "签发失败时改绑恢复原绑定"
+    else
+        fail "签发失败时改绑恢复原绑定"
+    fi
+}
+
+test_renew_dns_fails_when_certificate_did_not_change() {
+    local root="$TEST_TMP/cf-renew-nochange" output
+    mkdir -p "$root/acme-install/dnsapi" "$root/live/api.example.com"
+    # This fake acme.sh does nothing on --renew (no state in this account) and
+    # --install-cert merely re-copies the identical deployed bytes.
+    cat > "$root/acme-install/acme.sh" <<'FAKEACME'
+#!/usr/bin/env bash
+exit 0
+FAKEACME
+    chmod +x "$root/acme-install/acme.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$root/acme-install/dnsapi/dns_cf.sh"
+    printf 'same-old-cert' > "$root/live/api.example.com/fullchain.pem"
+    printf key > "$root/live/api.example.com/privkey.pem"
+    if output=$(
+        SSL_CERTBOT_CONFIG_DIR="$root/config"
+        SSL_CERT_BASE="$root/live"
+        SSL_ACME_HOME="$root/acme-install"
+        SSL_CERTBOT_NO_MAIN=1
+        source "$PROJECT_ROOT/src/ssl-certbot.sh" >/dev/null 2>&1
+        exec 2>&1
+        trap - EXIT INT TERM HUP
+        ssl_ensure_acme() { :; }
+        ssl_cf_test_account() { :; }
+        ssl_cf_add_account main 'tok.aaa111' >/dev/null || exit 1
+        ssl_cf_bind_domain api.example.com 1 || exit 1
+        ! ssl_renew_dns_cert api.example.com 1 || exit 1
+    ); then
+        assert_contains "$output" "未产生新证书" "未变更的 DNS 续期报告为失败而不是成功"
+    else
+        fail "未变更的 DNS 续期报告为失败而不是成功"
+    fi
+}
+
+test_bad_metadata_does_not_abort_listing() {
+    local root="$TEST_TMP/cf-badmeta" output
+    mkdir -p "$root/live/a.example.com" "$root/live/b.example.com" "$root/config"
+    printf cert > "$root/live/a.example.com/fullchain.pem"
+    printf key > "$root/live/a.example.com/privkey.pem"
+    printf cert > "$root/live/b.example.com/fullchain.pem"
+    printf key > "$root/live/b.example.com/privkey.pem"
+    printf 'SSL_CERTBOT_METHOD=bogus\n' > "$root/config/a.example.com.conf"
+    if output=$(
+        SSL_CERTBOT_CONFIG_DIR="$root/config"
+        SSL_CERT_BASE="$root/live"
+        SSL_CERTBOT_NO_MAIN=1
+        source "$PROJECT_ROOT/src/ssl-certbot.sh" >/dev/null 2>&1
+        exec 2>&1
+        trap - EXIT INT TERM HUP
+        ssl_log() { :; }
+        set -e
+        ssl_list_certs
+        ssl_cert_status b.example.com
+    ); then
+        assert_contains "$output" "b.example.com" "损坏的配置不会中断其他证书的显示"
+    else
+        fail "损坏的配置不会中断其他证书的显示"
+    fi
+}
+
 test_readme_documents_cloudflare_dns_mode() {
     local readme entry
     readme=$(<"$PROJECT_ROOT/README.md")
@@ -1376,9 +1548,15 @@ test_readme_documents_letsencrypt_live_path_and_network_modes() {
 }
 
 test_cf_account_state_and_binding
+if bash "$PROJECT_ROOT/tests/test_dns_deployment.sh"; then
+    pass 'DNS 部署失败保护与改绑锁回归'
+else
+    fail 'DNS 部署失败保护与改绑锁回归'
+fi
 test_cf_security_and_dns_route
 test_cf_api_does_not_expose_token_in_argv
 test_dns_acme_calls_are_isolated_per_account
+test_dns_acme_rejects_unsafe_log_before_execution
 test_dns_renewal_requires_existing_acme_installation
 test_corrupted_certificate_does_not_abort_listing
 test_mixed_renewal_processes_dns_when_http_pause_fails
@@ -1391,6 +1569,9 @@ test_account_deletion_honours_wildcard_bindings
 test_removed_account_leaves_no_credential_on_disk
 test_cloudflare_menu_and_cli_are_wired
 test_jq_is_only_ensured_for_dns_paths
+test_rebind_reissues_through_target_account
+test_renew_dns_fails_when_certificate_did_not_change
+test_bad_metadata_does_not_abort_listing
 test_uninstaller_keeps_cloudflare_account_state
 test_readme_documents_cloudflare_dns_mode
 test_network_mode_persistence_and_legacy_certificate_migration

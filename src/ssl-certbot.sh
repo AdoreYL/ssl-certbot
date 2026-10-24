@@ -198,6 +198,7 @@ ssl_cf_cmd_remove() {
 
 ssl_cf_cmd_rebind() {
     local domain="${1:-}" id="${2:-}"
+    ssl_acquire_lock || return 1
     if [[ -z "$domain" ]]; then
         read -rp "  请输入要改绑的域名（可为 *.example.com）：" domain
     fi

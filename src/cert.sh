@@ -20,6 +20,18 @@ ssl_format_cert_expiry() {
     fi
 }
 
+# Content fingerprint of a deployed certificate. Used to prove that a renewal
+# actually replaced the certificate instead of re-installing identical bytes.
+ssl_certificate_digest() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" 2>/dev/null | cut -d' ' -f1 || true
+    else
+        openssl dgst -sha256 "$file" 2>/dev/null | sed 's/.*= //' || true
+    fi
+}
+
 ssl_cert_expiry_from_file() {
     local fullchain="$1"
     local raw_expiry
@@ -134,6 +146,13 @@ ssl_dns_acme_call() {
     token=$(ssl_cf_token "$id") || return 1
     home=$(ssl_cf_acme_home "$id")
     log_file="$home/acme.sh.log"
+    # Reject unsafe existing files before redirecting any provider output.
+    if [[ -e "$log_file" || -L "$log_file" ]]; then
+        ssl_cf_private_file "$log_file" || { ssl_log ERROR 'acme.sh 日志权限不安全。'; return 1; }
+    else
+        (umask 077; set -o noclobber; : > "$log_file") || return 1
+        chmod 600 "$log_file" || return 1
+    fi
     # The environment Token always wins over any persisted value, and the
     # other Cloudflare credential shapes are cleared so an account cannot be
     # authenticated with another account's key. Upstream output is hidden and
@@ -152,42 +171,90 @@ ssl_dns_acme_call() {
     return 1
 }
 
+ssl_deploy_dns_cert() {
+    local domain="$1" id="$2" binding="${3:-}" action="$4"
+    local dir backup file before after result=0 failed=0 restore_failed=0
+    dir="$SSL_CERT_BASE/$(ssl_cert_slug "$domain")"
+    [[ -d "$dir" && ! -L "$dir" ]] || return 1
+    backup=$(mktemp -d "$dir/.deploy-backup.XXXXXXXX") || return 1
+    chmod 700 "$backup" || return 1
+    for file in fullchain.pem privkey.pem; do
+        if [[ -L "$dir/$file" || ( -e "$dir/$file" && ! -f "$dir/$file" ) ]]; then
+            rmdir "$backup"; return 1
+        fi
+        if [[ -f "$dir/$file" ]]; then
+            cp -p "$dir/$file" "$backup/$file" || return 1
+        fi
+    done
+    # --renew itself can deploy to saved Le_Real*Path destinations. Protect
+    # the pair before invoking acme.sh, not just before --install-cert.
+    before=$(ssl_certificate_digest "$dir/fullchain.pem")
+    if [[ "$action" == issue ]]; then
+        ssl_dns_acme_call "$id" --issue --dns dns_cf -d "$domain" --server letsencrypt --keylength 2048 || result=$?
+        [[ "$result" == 0 || "$result" == 2 ]] || failed=1
+    else
+        ssl_dns_acme_call "$id" --renew -d "$domain" --server letsencrypt || result=$?
+        [[ "$result" == 0 ]] || failed=1
+        if [[ "$result" == 2 ]]; then
+            ssl_log ERROR "$domain 未发生续期（acme.sh 返回跳过），按失败处理。"
+        fi
+    fi
+    if [[ "$failed" == 0 ]]; then
+        if ! ssl_dns_acme_call "$id" --install-cert -d "$domain" \
+        --fullchain-file "$dir/fullchain.pem" --key-file "$dir/privkey.pem"; then
+            failed=1
+        elif [[ ! -s "$dir/fullchain.pem" || ! -s "$dir/privkey.pem" ]] || \
+            ! chmod 644 "$dir/fullchain.pem" || ! chmod 600 "$dir/privkey.pem"; then
+            failed=1
+        fi
+    fi
+    if [[ "$failed" == 0 && "$action" == renew ]]; then
+        after=$(ssl_certificate_digest "$dir/fullchain.pem")
+        if [[ -z "$after" || "$before" == "$after" ]]; then
+            ssl_log ERROR "$domain 未产生新证书（部署内容未变化或无法读取），按失败处理。"
+            failed=1
+        fi
+    fi
+    if [[ "$failed" == 0 && "$binding" != no-bind ]]; then
+        ssl_cf_bind_domain "$domain" "$id" "$binding" || failed=1
+    fi
+    if [[ "$failed" == 1 ]]; then
+        for file in fullchain.pem privkey.pem; do
+            if [[ -f "$backup/$file" ]]; then
+                mv -f "$backup/$file" "$dir/$file" || restore_failed=1
+            else
+                rm -f "$dir/$file" || restore_failed=1
+            fi
+        done
+        if [[ "$restore_failed" == 1 ]]; then
+            ssl_log ERROR "部署失败且旧证书恢复失败，请保留并检查备份：$backup"
+            return 1
+        fi
+        ssl_log ERROR '证书可能已签发，但部署或绑定失败；已恢复原部署，未报告完整成功。'
+    fi
+    rm -f "$backup/fullchain.pem" "$backup/privkey.pem"
+    rmdir "$backup"
+    [[ "$failed" == 0 ]]
+}
+
 ssl_issue_dns_cert() {
-    local domain="$1" id="$2" result=0
+    local domain="$1" id="$2" force="${3:-}"
     local dir="$SSL_CERT_BASE/$(ssl_cert_slug "$domain")"
     ssl_validate_dns_domain "$domain" && ssl_cf_account_ready "$id" || return 1
     ssl_cf_test_account "$id" "$domain" || return 1
     mkdir -p "$dir" && chmod 700 "$dir" 2>/dev/null || return 1
-    ssl_dns_acme_call "$id" --issue --dns dns_cf -d "$domain" --server letsencrypt --keylength 2048 || result=$?
-    if [[ "$result" -ne 0 && "$result" -ne 2 ]]; then return 1; fi
-    if ! ssl_dns_acme_call "$id" --install-cert -d "$domain" \
-        --fullchain-file "$dir/fullchain.pem" --key-file "$dir/privkey.pem"; then
-        ssl_log ERROR "证书可能已签发，但未能安装；不会建立自动续期绑定。"
-        return 1
-    fi
-    [[ -f "$dir/fullchain.pem" && -f "$dir/privkey.pem" ]] || return 1
-    chmod 644 "$dir/fullchain.pem" && chmod 600 "$dir/privkey.pem" || return 1
-    if ! ssl_cf_bind_domain "$domain" "$id"; then
-        ssl_log ERROR "证书已安装，但账号绑定失败；不会报告完整成功。"
-        return 1
-    fi
+    ssl_deploy_dns_cert "$domain" "$id" "$force" issue || return 1
     ssl_log INFO "证书已保存：$dir/fullchain.pem；私钥：$dir/privkey.pem"
 }
 
 ssl_renew_dns_cert() {
-    local domain="$1" id="$2" result=0
-    local dir="$SSL_CERT_BASE/$(ssl_cert_slug "$domain")"
+    local domain="$1" id="$2"
     ssl_validate_dns_domain "$domain" && ssl_cf_account_ready "$id" || return 1
     [[ $(ssl_cf_account_for_domain "$domain") == "$id" ]] || return 1
     # acme.sh --renew takes only domain/ecc/server. The validation method
     # comes from Le_Webroot persisted in this account's own config-home during
     # --issue, so renewal cannot fall back to standalone HTTP-01.
-    ssl_dns_acme_call "$id" --renew -d "$domain" --server letsencrypt || result=$?
-    if [[ "$result" -ne 0 && "$result" -ne 2 ]]; then return 1; fi
-    ssl_dns_acme_call "$id" --install-cert -d "$domain" \
-        --fullchain-file "$dir/fullchain.pem" --key-file "$dir/privkey.pem" || return 1
-    [[ -f "$dir/fullchain.pem" && -f "$dir/privkey.pem" ]] || return 1
-    chmod 644 "$dir/fullchain.pem" && chmod 600 "$dir/privkey.pem"
+    ssl_deploy_dns_cert "$domain" "$id" no-bind renew
 }
 
 # ── Renew certificate ──────────────────────────────────────────────
@@ -475,18 +542,32 @@ ssl_cert_status() {
 
 # Print the validation method for a domain. $2 selects the indent so the
 # list page (four spaces) and the status page (two spaces) keep alignment.
+# This is display-only: it must never return non-zero, otherwise a single
+# malformed or hand-edited config file would abort the whole certificate list
+# under `set -e`.
 ssl_print_validation_mode() {
     local domain="$1" indent="${2-    }" method id name
-    method=$(ssl_validation_method "$domain") || { echo "${indent}验证方式：配置无效"; return 1; }
-    if [[ "$method" == dns ]]; then
-        id=$(ssl_cf_account_for_domain "$domain") || return 1
-        name='未知账号'
-        if ssl_cf_account_ready "$id"; then name=$(<"$(ssl_cf_account_dir "$id")/name"); fi
-        echo "${indent}验证方式：Cloudflare DNS-01（账号 ${id:-未绑定}：$name）"
-    else
-        echo "${indent}验证方式：HTTP-01"
-        echo "${indent}网络模式：$(ssl_load_network_mode "$domain")"
-    fi
+    method=$(ssl_validation_method "$domain" 2>/dev/null) || method=invalid
+    case "$method" in
+        dns)
+            id=$(ssl_cf_account_for_domain "$domain" 2>/dev/null) || id=""
+            if [[ -z "$id" ]]; then
+                echo "${indent}验证方式：Cloudflare DNS-01（账号绑定缺失或无效，请执行 w ssl cf-rebind 修复）"
+            else
+                name='未知账号'
+                if ssl_cf_account_ready "$id"; then name=$(<"$(ssl_cf_account_dir "$id")/name"); fi
+                echo "${indent}验证方式：Cloudflare DNS-01（账号 $id：$name）"
+            fi
+            ;;
+        http)
+            echo "${indent}验证方式：HTTP-01"
+            echo "${indent}网络模式：$(ssl_load_network_mode "$domain")"
+            ;;
+        *)
+            echo "${indent}验证方式：配置无效"
+            ;;
+    esac
+    return 0
 }
 
 # ── Remove certificate ─────────────────────────────────────────────
